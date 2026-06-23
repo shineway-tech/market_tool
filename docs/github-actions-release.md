@@ -12,6 +12,7 @@
 
 - `TAURI_SIGNING_PRIVATE_KEY`：Tauri updater 私钥
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：Tauri updater 私钥密码，如果生成私钥时没有密码，可以留空
+- `MARKETING_MASTER_RELAY_API_KEY`：Relay 授权 API Key，用于 GitHub Actions 打包客户端时注入
 
 私钥可以用下面命令生成：
 
@@ -24,6 +25,32 @@ npx tauri signer generate
 - 公钥填到 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`
 - 私钥填到 GitHub Secret `TAURI_SIGNING_PRIVATE_KEY`
 - 密码填到 GitHub Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+## macOS 签名和公证
+
+如果 macOS DMG 没有 Developer ID 签名和 Apple notarization，用户打开时会看到“不可靠的开发者”或无法验证开发者的提示。发布给普通用户下载的 DMG 需要配置下面这些 Secrets：
+
+- `APPLE_CERTIFICATE`：Developer ID Application `.p12` 证书的 base64 内容
+- `APPLE_CERTIFICATE_PASSWORD`：导出 `.p12` 时设置的密码
+- `KEYCHAIN_PASSWORD`：CI 临时 keychain 密码，可自行生成一个强密码
+- `APPLE_API_ISSUER`：App Store Connect API Issuer ID
+- `APPLE_API_KEY`：App Store Connect API Key ID
+- `APPLE_API_KEY_BASE64`：App Store Connect API 私钥 `.p8` 文件的 base64 内容
+
+证书要求：
+
+- Apple Developer Program 付费账号
+- 证书类型使用 `Developer ID Application`
+- 导出证书时要从 Keychain Access 的 `My Certificates` 中导出为 `.p12`
+
+本地生成 base64：
+
+```bash
+openssl base64 -A -in DeveloperIDApplication.p12 -out apple-certificate-base64.txt
+openssl base64 -A -in AuthKey_XXXXXXXXXX.p8 -out apple-api-key-base64.txt
+```
+
+然后分别把两个 txt 文件内容填到 `APPLE_CERTIFICATE` 和 `APPLE_API_KEY_BASE64`。
 
 ## 发布方式
 
