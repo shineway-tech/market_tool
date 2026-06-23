@@ -25,11 +25,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          release_json="$(gh release view "$GITHUB_REF_NAME" --json databaseId,isDraft 2>/dev/null || true)"
+          release_json="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft 2>/dev/null || true)"
           if [ -n "$release_json" ]; then
             is_draft="$(printf '%s' "$release_json" | jq -r '.isDraft')"
             if [ "$is_draft" = "true" ]; then
-              gh release delete "$GITHUB_REF_NAME" --yes
+              gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
             else
               echo "Release $GITHUB_REF_NAME already exists and is not a draft. Refusing to delete it."
               exit 1
@@ -37,6 +37,7 @@ jobs:
           fi
 
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "Marketing Master $GITHUB_REF_NAME" \
             --notes "Desktop release for Marketing Master."
