@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+server/**/node_modules/
+
+# Frontend build output
+dist/
+dist-ssr/
+
+# Tauri / Rust build output
+src-tauri/target/
+src-tauri/gen/
+target/
+
+# Local release artifacts
+release/
+*.dmg
+*.app.zip
+*.app.tar.gz
+*.msi
+*.exe
+*.deb
+*.rpm
+*.AppImage
+
+# Backend generated update packages
+server/marketing-master-api/public/desktop-updates/
+
+# Logs and runtime state
+logs/
+server/**/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+server/marketing-master-api/.npmrc
+server/marketing-master-api/config/config.json
+server/marketing-master-api/config/config.prod.json
+server/marketing-master-api/config/config.test.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

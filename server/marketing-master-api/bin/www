@@ -1,0 +1,57 @@
+const http = require('http');
+const lodash = require('lodash');
+const { logger } = require('@honeykid/ml');
+
+const app = require('../src/app');
+const config = require('../config');
+
+function normalizePort(val) {
+  const port = parseInt(val, 10);
+
+  if (lodash.isNaN(port)) {
+    return val;
+  }
+
+  if (port >= 0) {
+    return port;
+  }
+
+  return false;
+}
+
+const port = normalizePort(config.port || '3100');
+const host = config.host || '127.0.0.1';
+const server = http.createServer(app.callback());
+
+server.listen(port, host);
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  const bind = typeof port === 'string' ? `Pipe ${port}` : `Port ${port}`;
+
+  switch (error.code) {
+    case 'EACCES':
+      logger.error(`${bind} requires elevated privileges`);
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      logger.error(`${bind} is already in use`);
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+function onListening() {
+  const addr = server.address();
+  const bind = typeof addr === 'string' ? `pipe ${addr}` : `port ${addr.port}`;
+  logger.info(`Listening on ${host}:${bind}`);
+}
+
+server.on('error', onError);
+server.on('listening', onListening);
+server.keepAliveTimeout = 65 * 1000;

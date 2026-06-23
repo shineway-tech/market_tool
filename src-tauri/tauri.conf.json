@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "营销大师",
+  "version": "1.0.0",
+  "identifier": "com.marketingmaster.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "营销大师",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1040,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCNkRENkIxRUYyMEZBClJXVDZJTyt4MW0yTEFGc2ZWM2p1MFZ4K09DWWdUVmJ1ZGtLNW9HMWJhR1VBOW8xV1g2NUpLV3N6Cg==",
+      "endpoints": [
+        "https://market-api.honeykid.cn/v1/desktop-updates/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dangerousInsecureTransportProtocol": false,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
