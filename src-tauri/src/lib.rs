@@ -178,6 +178,8 @@ struct OAuthToken {
 #[serde(rename_all = "camelCase")]
 struct ChannelAccount {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
     platform_id: String,
     uid: String,
     nickname: String,
@@ -217,6 +219,7 @@ struct AccountSecret {
 
 #[derive(Debug, Clone)]
 struct PendingAuth {
+    user_id: String,
     platform_id: String,
     callback_url: String,
     relay_platform_id: Option<String>,
@@ -262,6 +265,7 @@ struct StartLoginResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StartLoginRequest {
+    user_id: String,
     platform_id: String,
     login_target: Option<String>,
 }
@@ -348,8 +352,11 @@ pub fn run() {
 }
 
 #[tauri::command]
-async fn get_bootstrap(app: AppHandle, state: State<'_, RuntimeState>) -> Result<Bootstrap, String> {
-    let _ = sync_aitoearn_accounts(&app).await;
+async fn get_bootstrap(
+    state: State<'_, RuntimeState>,
+    user_id: String,
+) -> Result<Bootstrap, String> {
+    let user_id = normalize_user_id(&user_id)?;
     let store = state.store.lock().map_err(lock_error)?;
     let mut settings = store.settings.clone();
     settings.relay.api_key.clear();
@@ -361,7 +368,7 @@ async fn get_bootstrap(app: AppHandle, state: State<'_, RuntimeState>) -> Result
 
     Ok(Bootstrap {
         platforms: default_platforms(),
-        accounts: store.accounts.clone(),
+        accounts: user_accounts(&store, &user_id),
         settings,
         callback_base_url,
     })
@@ -369,16 +376,12 @@ async fn get_bootstrap(app: AppHandle, state: State<'_, RuntimeState>) -> Result
 
 #[tauri::command]
 async fn list_channel_accounts(
-    app: AppHandle,
     state: State<'_, RuntimeState>,
+    user_id: String,
 ) -> Result<Vec<ChannelAccount>, String> {
-    let _ = sync_aitoearn_accounts(&app).await;
-    Ok(state
-        .store
-        .lock()
-        .map_err(lock_error)?
-        .accounts
-        .clone())
+    let user_id = normalize_user_id(&user_id)?;
+    let store = state.store.lock().map_err(lock_error)?;
+    Ok(user_accounts(&store, &user_id))
 }
 
 #[tauri::command]
@@ -399,6 +402,7 @@ async fn start_channel_login(
     state: State<'_, RuntimeState>,
     request: StartLoginRequest,
 ) -> Result<StartLoginResponse, String> {
+    let user_id = normalize_user_id(&request.user_id)?;
     let task_id = Uuid::new_v4().to_string();
     let settings = {
         let store = state.store.lock().map_err(lock_error)?;
@@ -484,6 +488,7 @@ async fn start_channel_login(
         pending.insert(
             task_id.clone(),
             PendingAuth {
+                user_id,
                 platform_id: request.platform_id.clone(),
                 callback_url: callback_url.clone(),
                 relay_platform_id: relay_platform_id.clone(),
@@ -519,12 +524,15 @@ async fn get_auth_task_status(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     task_id: String,
+    user_id: String,
 ) -> Result<AuthTaskStatus, String> {
+    let user_id = normalize_user_id(&user_id)?;
     let pending_task = state
         .pending_auth
         .lock()
         .map_err(lock_error)?
         .get(&task_id)
+        .filter(|task| task.user_id == user_id)
         .cloned();
 
     if let Some(task) = pending_task.clone() {
@@ -599,7 +607,7 @@ async fn get_auth_task_status(
             {
                 Ok(profile) => {
                     if let Some(existing) =
-                        existing_plugin_account_for_profile(&app, &task.platform_id, &profile)?
+                        existing_plugin_account_for_profile(&app, &task.user_id, &task.platform_id, &profile)?
                     {
                         return Ok(AuthTaskStatus {
                             task_id,
@@ -614,6 +622,7 @@ async fn get_auth_task_status(
 
                     let account = match sync_plugin_account_to_aitoearn(
                         &app,
+                        &task.user_id,
                         &settings.relay,
                         &relay_platform_id,
                         profile,
@@ -694,7 +703,8 @@ async fn get_auth_task_status(
                 .await?;
             let remote_status = first_string(&status, &["status"]).unwrap_or_default();
             if remote_status == "completed" || remote_status == "success" {
-                let synced = sync_aitoearn_accounts(&app).await?;
+                let settings = state.store.lock().map_err(lock_error)?.settings.clone();
+                let synced = fetch_aitoearn_accounts(&settings.relay).await?;
                 let account = find_synced_auth_account(&synced, &task.platform_id, &status)
                     .or_else(|| {
                         synced
@@ -715,6 +725,7 @@ async fn get_auth_task_status(
                     let account = account
                         .clone()
                         .ok_or_else(|| "抖音授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
+                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     let _ = take_pending_auth_cookie(&app, &task_id);
                     close_auth_window_by_label(&app, task.relay_window_label.as_deref());
                     eprintln!(
@@ -743,6 +754,7 @@ async fn get_auth_task_status(
                     let account = account
                         .clone()
                         .ok_or_else(|| "B 站授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
+                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     let login_cookie = capture_auth_window_cookies_any(
                         &app,
                         task.relay_window_label.as_deref(),
@@ -774,6 +786,7 @@ async fn get_auth_task_status(
                     let account = account
                         .clone()
                         .ok_or_else(|| "快手授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
+                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     let login_cookie = capture_auth_window_cookies_any(
                         &app,
                         task.relay_window_label.as_deref(),
@@ -810,7 +823,9 @@ async fn get_auth_task_status(
                 return Ok(AuthTaskStatus {
                     task_id,
                     status: "success".to_string(),
-                    account,
+                    account: account
+                        .map(|item| upsert_account_for_user(&app, &task.user_id, item))
+                        .transpose()?,
                     message: None,
                 });
             }
@@ -842,7 +857,8 @@ async fn get_auth_task_status(
         }
     }
 
-    let accounts = state.store.lock().map_err(lock_error)?.accounts.clone();
+    let store = state.store.lock().map_err(lock_error)?;
+    let accounts = user_accounts(&store, &user_id);
     let account = accounts
         .iter()
         .find(|item| {
@@ -876,23 +892,31 @@ async fn refresh_channel_account(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     account_id: String,
+    user_id: String,
 ) -> Result<ChannelAccount, String> {
+    let user_id = normalize_user_id(&user_id)?;
     let existing = {
         let store = state.store.lock().map_err(lock_error)?;
-        store.accounts.iter().find(|item| item.id == account_id).cloned()
+        store
+            .accounts
+            .iter()
+            .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
+            .cloned()
     };
     let account = existing
         .as_ref()
         .ok_or_else(|| "账号不存在".to_string())?;
     let (settings, secret_cookie) = {
-        let store = state.store.lock().map_err(lock_error)?;
-        (
+        let mut store = state.store.lock().map_err(lock_error)?;
+        let migrated = migrate_account_secret_for_account(&mut store, account);
+        let value = (
             store.settings.clone(),
-            store
-                .account_secrets
-                .get(&account_id)
-                .and_then(|secret| secret.login_cookie.clone()),
-        )
+            account_secret_for_account(&store, account).and_then(|secret| secret.login_cookie),
+        );
+        if migrated {
+            persist_store(&app, &store)?;
+        }
+        value
     };
     let xhs_result = if account.platform_id == "xiaohongshu" {
         Some(refresh_xhs_account_profile(&app, account, secret_cookie.as_deref()).await)
@@ -904,17 +928,15 @@ async fn refresh_channel_account(
     } else {
         Ok(None)
     };
-    let sync_result = sync_aitoearn_accounts(&app).await;
     if let Some(Err(error)) = xhs_result.as_ref() {
         return Err(error.clone());
     }
-    if analytics_result.is_err() && sync_result.is_err() {
+    if analytics_result.is_err() {
         return Err(format!(
             "刷新失败：{}",
             analytics_result
                 .as_ref()
                 .err()
-                .or_else(|| sync_result.as_ref().err())
                 .cloned()
                 .unwrap_or_else(|| "平台账号数据暂时不可用".to_string())
         ));
@@ -925,6 +947,7 @@ async fn refresh_channel_account(
     if let Some(profile) = xhs_profile.as_ref() {
         let _ = sync_plugin_account_to_aitoearn(
             &app,
+            &user_id,
             &settings.relay,
             &profile.relay_platform_id,
             profile.clone(),
@@ -942,7 +965,7 @@ async fn refresh_channel_account(
     let account = store
         .accounts
         .iter_mut()
-        .find(|item| item.id == account_id)
+        .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
         .ok_or_else(|| "账号不存在".to_string())?;
     if let Some(profile) = xhs_profile.as_ref() {
         if !profile.nickname.trim().is_empty() {
@@ -977,23 +1000,24 @@ async fn open_account_homepage(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     account_id: String,
+    user_id: String,
 ) -> Result<(), String> {
+    let user_id = normalize_user_id(&user_id)?;
     let (account, saved_login_cookie, saved_webview_session_id) = {
-        let store = state.store.lock().map_err(lock_error)?;
+        let mut store = state.store.lock().map_err(lock_error)?;
         let account = store
             .accounts
             .iter()
-            .find(|item| item.id == account_id)
+            .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
             .cloned()
             .ok_or_else(|| "账号不存在".to_string())?;
-        let saved_login_cookie = store
-            .account_secrets
-            .get(&account.id)
-            .and_then(|secret| secret.login_cookie.clone());
-        let saved_webview_session_id = store
-            .account_secrets
-            .get(&account.id)
-            .and_then(|secret| secret.webview_session_id.clone());
+        let migrated = migrate_account_secret_for_account(&mut store, &account);
+        let secret = account_secret_for_account(&store, &account);
+        let saved_login_cookie = secret.as_ref().and_then(|secret| secret.login_cookie.clone());
+        let saved_webview_session_id = secret.and_then(|secret| secret.webview_session_id);
+        if migrated {
+            persist_store(&app, &store)?;
+        }
         Ok::<_, String>((account, saved_login_cookie, saved_webview_session_id))
     }
     ?;
@@ -1063,10 +1087,16 @@ async fn delete_channel_account(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     account_id: String,
+    user_id: String,
 ) -> Result<(), String> {
+    let user_id = normalize_user_id(&user_id)?;
     let account = {
         let store = state.store.lock().map_err(lock_error)?;
-        store.accounts.iter().find(|item| item.id == account_id).cloned()
+        store
+            .accounts
+            .iter()
+            .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
+            .cloned()
     };
     if let Some(account) = account.as_ref() {
         let settings = state.store.lock().map_err(lock_error)?.settings.clone();
@@ -1075,9 +1105,18 @@ async fn delete_channel_account(
 
     let mut store = state.store.lock().map_err(lock_error)?;
     let original_len = store.accounts.len();
-    store.accounts.retain(|item| item.id != account_id);
+    store
+        .accounts
+        .retain(|item| !(item.id == account_id && account_belongs_to_user(item, &user_id)));
     if store.accounts.len() == original_len {
         return Err("账号不存在".to_string());
+    }
+    for secret_key in account
+        .as_ref()
+        .map(account_secret_candidates)
+        .unwrap_or_default()
+    {
+        store.account_secrets.remove(&secret_key);
     }
     persist_store(&app, &store)?;
     Ok(())
@@ -1148,21 +1187,6 @@ async fn fetch_aitoearn_auth_status(
     .await?;
     ensure_aitoearn_success(&value)?;
     Ok(relay_response_data(&value).clone())
-}
-
-async fn sync_aitoearn_accounts(app: &AppHandle) -> Result<Vec<ChannelAccount>, String> {
-    let runtime = app.state::<RuntimeState>();
-    let settings = runtime.store.lock().map_err(lock_error)?.settings.clone();
-    let remote_accounts = fetch_aitoearn_accounts(&settings.relay).await?;
-
-    {
-        let mut store = runtime.store.lock().map_err(lock_error)?;
-        merge_remote_accounts(&mut store.accounts, remote_accounts);
-        persist_store(app, &store)?;
-    }
-    hydrate_stored_account_avatars(app).await;
-    let accounts = runtime.store.lock().map_err(lock_error)?.accounts.clone();
-    Ok(accounts)
 }
 
 async fn fetch_aitoearn_accounts(relay: &RelaySettings) -> Result<Vec<ChannelAccount>, String> {
@@ -1515,6 +1539,7 @@ fn plugin_profile_matches_account_strong(
 
 fn existing_plugin_account_for_profile(
     app: &AppHandle,
+    user_id: &str,
     platform_id: &str,
     profile: &PluginAccountInfo,
 ) -> Result<Option<ChannelAccount>, String> {
@@ -1525,7 +1550,8 @@ fn existing_plugin_account_for_profile(
         .accounts
         .iter()
         .find(|account| {
-            normalize_platform_id(&account.platform_id) == normalized
+            account_belongs_to_user(account, user_id)
+                && normalize_platform_id(&account.platform_id) == normalized
                 && plugin_profile_matches_account_strong(profile, account)
         })
         .cloned())
@@ -3224,6 +3250,7 @@ async fn collect_wx_sph_plugin_account(
 
 async fn sync_plugin_account_to_aitoearn(
     app: &AppHandle,
+    user_id: &str,
     relay: &RelaySettings,
     relay_platform_id: &str,
     account: PluginAccountInfo,
@@ -3256,12 +3283,12 @@ async fn sync_plugin_account_to_aitoearn(
     let data = relay_response_data(&value);
     let requested_uid = plugin_account_uid(&account);
     let remote_account_ref = first_string(data, &["id", "accountId"]).filter(|ref_id| {
-        !relay_ref_belongs_to_different_uid(app, relay_platform_id, ref_id, &requested_uid)
+        !relay_ref_belongs_to_different_uid(app, user_id, relay_platform_id, ref_id, &requested_uid)
             .unwrap_or(false)
     });
     let fallback_account =
         plugin_info_to_channel_account(relay_platform_id, &account, remote_account_ref.clone());
-    let synced = sync_aitoearn_accounts(app)
+    let synced = fetch_aitoearn_accounts(relay)
         .await
         .map_err(PluginAuthError::Failed)?;
     let synced_account = synced
@@ -3279,7 +3306,8 @@ async fn sync_plugin_account_to_aitoearn(
         })
         .unwrap_or(fallback_account);
     let enriched = enrich_plugin_synced_account(synced_account, &account);
-    upsert_local_account(app, enriched.clone()).map_err(PluginAuthError::Failed)?;
+    let enriched =
+        upsert_local_account(app, user_id, enriched.clone()).map_err(PluginAuthError::Failed)?;
     upsert_account_secret(app, &enriched.id, &account.login_cookie).map_err(PluginAuthError::Failed)?;
     Ok(enriched)
 }
@@ -3300,6 +3328,7 @@ fn account_uid_matches(left: &str, right: &str) -> bool {
 
 fn relay_ref_belongs_to_different_uid(
     app: &AppHandle,
+    user_id: &str,
     relay_platform_id: &str,
     relay_account_ref: &str,
     requested_uid: &str,
@@ -3308,7 +3337,8 @@ fn relay_ref_belongs_to_different_uid(
     let store = runtime.store.lock().map_err(lock_error)?;
     let platform_id = normalize_platform_id(relay_platform_id);
     Ok(store.accounts.iter().any(|account| {
-        normalize_platform_id(&account.platform_id) == platform_id
+        account_belongs_to_user(account, user_id)
+            && normalize_platform_id(&account.platform_id) == platform_id
             && (account.relay_account_ref.as_deref() == Some(relay_account_ref)
                 || account.id == relay_account_ref)
             && !account_uid_matches(&account.uid, requested_uid)
@@ -3332,6 +3362,7 @@ fn plugin_info_to_channel_account(
     let now = Utc::now();
     ChannelAccount {
         id,
+        user_id: None,
         platform_id,
         uid,
         nickname: account.nickname.clone(),
@@ -3526,63 +3557,6 @@ fn string_from_image_value(value: &Value, keys: &[&str]) -> Option<String> {
             None
         }
         _ => None,
-    }
-}
-
-async fn hydrate_stored_account_avatars(app: &AppHandle) {
-    let runtime = app.state::<RuntimeState>();
-    let targets = match runtime.store.lock().map_err(lock_error) {
-        Ok(store) => store
-            .accounts
-            .iter()
-            .filter(|account| should_materialize_avatar(&account.platform_id, &account.avatar))
-            .map(|account| {
-                (
-                    account.id.clone(),
-                    account.platform_id.clone(),
-                    account.avatar.clone(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            eprintln!("[avatar] read store failed: {error}");
-            return;
-        }
-    };
-    if targets.is_empty() {
-        return;
-    }
-
-    let mut updates = Vec::new();
-    for (id, platform_id, avatar) in targets {
-        let materialized = materialize_account_avatar(&platform_id, avatar.clone()).await;
-        if materialized != avatar {
-            updates.push((id, avatar, materialized));
-        }
-    }
-    if updates.is_empty() {
-        return;
-    }
-
-    let mut store = match runtime.store.lock().map_err(lock_error) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("[avatar] write store failed: {error}");
-            return;
-        }
-    };
-    for (id, previous_avatar, materialized_avatar) in updates {
-        if let Some(account) = store
-            .accounts
-            .iter_mut()
-            .find(|account| account.id == id && account.avatar == previous_avatar)
-        {
-            account.avatar = materialized_avatar;
-            account.updated_at = Utc::now();
-        }
-    }
-    if let Err(error) = persist_store(app, &store) {
-        eprintln!("[avatar] persist store failed: {error}");
     }
 }
 
@@ -3839,6 +3813,7 @@ fn aitoearn_account_from_value(value: &Value) -> Option<ChannelAccount> {
 
     Some(ChannelAccount {
         id: id.clone(),
+        user_id: None,
         platform_id,
         uid,
         nickname,
@@ -3851,52 +3826,6 @@ fn aitoearn_account_from_value(value: &Value) -> Option<ChannelAccount> {
         updated_at,
         last_sync_at,
     })
-}
-
-fn merge_remote_accounts(local_accounts: &mut Vec<ChannelAccount>, remote_accounts: Vec<ChannelAccount>) {
-    for remote in remote_accounts {
-        if let Some(existing) = local_accounts.iter_mut().find(|item| {
-            item.platform_id == remote.platform_id
-                && (item.uid == remote.uid || item.relay_account_ref == remote.relay_account_ref)
-        }) {
-            let keep_local_display = existing.platform_id == "xiaohongshu";
-            let avatar = if keep_local_display && !existing.avatar.trim().is_empty() {
-                existing.avatar.clone()
-            } else {
-                remote.avatar.clone()
-            };
-            let nickname = if keep_local_display && !existing.nickname.trim().is_empty() {
-                existing.nickname.clone()
-            } else {
-                remote.nickname.clone()
-            };
-            let followers = if existing.followers.unwrap_or_default() > 0
-                && remote.followers.unwrap_or_default() == 0
-            {
-                existing.followers
-            } else {
-                remote.followers
-            };
-            let last_sync_at = match (existing.last_sync_at.clone(), remote.last_sync_at.clone()) {
-                (Some(local), Some(remote)) => Some(local.max(remote)),
-                (Some(local), None) => Some(local),
-                (None, remote) => remote,
-            };
-            let updated_at = existing.updated_at.max(remote.updated_at);
-            *existing = ChannelAccount {
-                avatar,
-                nickname,
-                followers,
-                updated_at,
-                last_sync_at,
-                token: existing.token.clone(),
-                created_at: existing.created_at.min(remote.created_at),
-                ..remote
-            };
-        } else {
-            local_accounts.push(remote);
-        }
-    }
 }
 
 fn enrich_plugin_synced_account(mut synced: ChannelAccount, account: &PluginAccountInfo) -> ChannelAccount {
@@ -3917,22 +3846,35 @@ fn enrich_plugin_synced_account(mut synced: ChannelAccount, account: &PluginAcco
     synced
 }
 
-fn upsert_local_account(app: &AppHandle, account: ChannelAccount) -> Result<(), String> {
+fn upsert_local_account(
+    app: &AppHandle,
+    user_id: &str,
+    account: ChannelAccount,
+) -> Result<ChannelAccount, String> {
     let runtime = app.state::<RuntimeState>();
     let mut store = runtime.store.lock().map_err(lock_error)?;
+    let mut source_secret_keys = account_secret_candidates(&account);
+    let mut account = scoped_account_for_user(user_id, account);
+    for key in account_secret_candidates(&account) {
+        push_unique(&mut source_secret_keys, key);
+    }
     if let Some(existing) = store.accounts.iter_mut().find(|item| {
-        item.platform_id == account.platform_id
+        account_belongs_to_user(item, user_id)
+            && item.platform_id == account.platform_id
             && (item.uid == account.uid || item.relay_account_ref == account.relay_account_ref)
     }) {
+        account.id = existing.id.clone();
         *existing = ChannelAccount {
             token: existing.token.clone(),
             created_at: existing.created_at.min(account.created_at),
-            ..account
+            ..account.clone()
         };
     } else {
-        store.accounts.push(account);
+        store.accounts.push(account.clone());
     }
-    persist_store(app, &store)
+    migrate_account_secret_from_keys(&mut store, &account.id, &source_secret_keys);
+    persist_store(app, &store)?;
+    Ok(account)
 }
 
 fn upsert_account_secret(app: &AppHandle, account_id: &str, login_cookie: &str) -> Result<(), String> {
@@ -4144,11 +4086,21 @@ async fn finish_relay_callback(
         .unwrap_or_else(|| platform_name(&platform_id).to_string());
     let avatar = params.get("avatar").cloned().unwrap_or_default();
     let relay_account_ref = Some(task_id.clone());
+    let user_id = app
+        .state::<RuntimeState>()
+        .pending_auth
+        .lock()
+        .map_err(lock_error)?
+        .get(&task_id)
+        .map(|task| task.user_id.clone())
+        .ok_or_else(|| "授权任务不存在或已过期".to_string())?;
 
-    upsert_account(
+    upsert_account_for_user(
         app,
+        &user_id,
         ChannelAccount {
             id: Uuid::new_v4().to_string(),
+            user_id: None,
             platform_id,
             uid,
             nickname,
@@ -4217,10 +4169,12 @@ async fn finish_oauth_callback(
     .unwrap_or_default();
     let followers = first_count(&profile, FOLLOWER_COUNT_KEYS);
 
-    upsert_account(
+    upsert_account_for_user(
         app,
+        &pending.user_id,
         ChannelAccount {
             id: Uuid::new_v4().to_string(),
+            user_id: None,
             platform_id: platform_settings.platform_id,
             uid,
             nickname,
@@ -4295,13 +4249,27 @@ async fn fetch_oauth_profile(
         .map_err(|error| format!("用户资料响应不是 JSON: {error}"))
 }
 
-fn upsert_account(app: &AppHandle, mut account: ChannelAccount) -> Result<ChannelAccount, String> {
+fn upsert_account_for_user(
+    app: &AppHandle,
+    user_id: &str,
+    account: ChannelAccount,
+) -> Result<ChannelAccount, String> {
+    let user_id = normalize_user_id(user_id)?;
     let runtime = app.state::<RuntimeState>();
     let mut store = runtime.store.lock().map_err(lock_error)?;
+    let mut source_secret_keys = account_secret_candidates(&account);
+    let mut account = scoped_account_for_user(&user_id, account);
+    for key in account_secret_candidates(&account) {
+        push_unique(&mut source_secret_keys, key);
+    }
     if let Some(existing) = store
         .accounts
         .iter_mut()
-        .find(|item| item.platform_id == account.platform_id && item.uid == account.uid)
+        .find(|item| {
+            account_belongs_to_user(item, &user_id)
+                && item.platform_id == account.platform_id
+                && (item.uid == account.uid || item.relay_account_ref == account.relay_account_ref)
+        })
     {
         account.id = existing.id.clone();
         account.created_at = existing.created_at;
@@ -4309,14 +4277,16 @@ fn upsert_account(app: &AppHandle, mut account: ChannelAccount) -> Result<Channe
     } else {
         store.accounts.push(account.clone());
     }
+    migrate_account_secret_from_keys(&mut store, &account.id, &source_secret_keys);
     let completed_task_id = account.relay_account_ref.clone();
     runtime
         .pending_auth
         .lock()
         .map_err(lock_error)?
         .retain(|task_id, task| {
-            completed_task_id.as_deref() != Some(task_id.as_str())
-                && !(completed_task_id.is_none() && task.platform_id == account.platform_id)
+            task.user_id != user_id
+                || (completed_task_id.as_deref() != Some(task_id.as_str())
+                    && !(completed_task_id.is_none() && task.platform_id == account.platform_id))
         });
     persist_store(app, &store)?;
     Ok(account)
@@ -4528,6 +4498,110 @@ fn normalize_platform_id(value: &str) -> String {
         "BILIBILI" => "bilibili".to_string(),
         other => other.to_string(),
     }
+}
+
+fn normalize_user_id(value: &str) -> Result<String, String> {
+    let user_id = value.trim();
+    if user_id.is_empty() {
+        return Err("当前登录状态无效，请重新登录".to_string());
+    }
+    Ok(user_id.to_string())
+}
+
+fn account_belongs_to_user(account: &ChannelAccount, user_id: &str) -> bool {
+    account.user_id.as_deref() == Some(user_id)
+}
+
+fn user_accounts(store: &StoreFile, user_id: &str) -> Vec<ChannelAccount> {
+    store
+        .accounts
+        .iter()
+        .filter(|account| account_belongs_to_user(account, user_id))
+        .cloned()
+        .collect()
+}
+
+fn account_secret_for_account(store: &StoreFile, account: &ChannelAccount) -> Option<AccountSecret> {
+    account_secret_candidates(account)
+        .into_iter()
+        .find_map(|key| store.account_secrets.get(&key).cloned())
+}
+
+fn migrate_account_secret_for_account(store: &mut StoreFile, account: &ChannelAccount) -> bool {
+    let keys = account_secret_candidates(account);
+    migrate_account_secret_from_keys(store, &account.id, &keys)
+}
+
+fn migrate_account_secret_from_keys(
+    store: &mut StoreFile,
+    target_id: &str,
+    source_keys: &[String],
+) -> bool {
+    let mut changed = false;
+    for key in source_keys {
+        if key == target_id {
+            continue;
+        }
+        let Some(source) = store.account_secrets.get(key).cloned() else {
+            continue;
+        };
+        let target = store.account_secrets.entry(target_id.to_string()).or_default();
+        if target.login_cookie.is_none() && source.login_cookie.is_some() {
+            target.login_cookie = source.login_cookie.clone();
+            changed = true;
+        }
+        if target.webview_session_id.is_none() && source.webview_session_id.is_some() {
+            target.webview_session_id = source.webview_session_id.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn account_secret_candidates(account: &ChannelAccount) -> Vec<String> {
+    let mut values = Vec::new();
+    push_unique(&mut values, account.id.clone());
+    if let Some(user_id) = account.user_id.as_deref() {
+        if let Some(raw_id) = unscoped_account_id(user_id, &account.id) {
+            push_unique(&mut values, raw_id);
+        }
+    }
+    if let Some(relay_account_ref) = account.relay_account_ref.as_ref() {
+        push_unique(&mut values, relay_account_ref.clone());
+        if let Some(user_id) = account.user_id.as_deref() {
+            push_unique(&mut values, scoped_account_id(user_id, relay_account_ref));
+        }
+    }
+    values
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|item| item == &value) {
+        values.push(value);
+    }
+}
+
+fn scoped_account_for_user(user_id: &str, mut account: ChannelAccount) -> ChannelAccount {
+    account.user_id = Some(user_id.to_string());
+    account.id = scoped_account_id(user_id, &account.id);
+    account
+}
+
+fn scoped_account_id(user_id: &str, account_id: &str) -> String {
+    let prefix = format!("u{}_", stable_label_fragment(user_id));
+    if account_id.starts_with(&prefix) {
+        account_id.to_string()
+    } else {
+        format!("{prefix}{account_id}")
+    }
+}
+
+fn unscoped_account_id(user_id: &str, account_id: &str) -> Option<String> {
+    let prefix = format!("u{}_", stable_label_fragment(user_id));
+    account_id
+        .strip_prefix(&prefix)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
 }
 
 fn aitoearn_platform_id(platform_id: &str) -> Option<&'static str> {

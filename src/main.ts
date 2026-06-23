@@ -89,6 +89,7 @@ interface AuthSettings {
 
 interface ChannelAccount {
   id: string;
+  userId?: string;
   platformId: string;
   uid: string;
   nickname: string;
@@ -198,6 +199,7 @@ const API_BASE_URL = "https://market-api.honeykid.cn";
 const AUTH_TOKEN_KEY = "marketing-master-api-token";
 const AUTO_UPDATE_KEY = "marketing-master-auto-update";
 const APP_VERSION = __APP_VERSION__;
+const INPUT_HINTS_OFF = 'autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore="true"';
 
 const copy = {
   zh: {
@@ -516,7 +518,9 @@ async function boot() {
 
 async function loadClientData() {
   try {
-    const bootstrap = await invokeCommand<Bootstrap>("get_bootstrap");
+    const bootstrap = await invokeCommand<Bootstrap>("get_bootstrap", {
+      userId: requireCurrentUserId(),
+    });
     platforms = bootstrap.platforms;
     accounts = bootstrap.accounts;
     settings = bootstrap.settings;
@@ -528,6 +532,13 @@ async function loadClientData() {
 
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(command, args);
+}
+
+function requireCurrentUserId() {
+  if (!currentUser?.id) {
+    throw new Error(copy[language].loginRequired);
+  }
+  return currentUser.id;
 }
 
 async function apiRequest<T>(
@@ -605,7 +616,7 @@ function render() {
         </button>
         <label class="search">
           ${icon("search")}
-          <input type="search" placeholder="${text.search}" />
+          <input type="search" ${INPUT_HINTS_OFF} placeholder="${text.search}" />
         </label>
         <div class="top-actions">
           <button class="icon-btn" type="button" data-menu="settings" title="${text.settingsTitle}">${icon("settings")}</button>
@@ -661,24 +672,24 @@ function authPage() {
           </div>
           <label>
             <span>${text.account}</span>
-            <input name="account" autocomplete="username" placeholder="${text.authAccountPlaceholder}" value="${escapeAttribute(authDraft.account)}" required />
+            <input name="account" ${INPUT_HINTS_OFF} placeholder="${text.authAccountPlaceholder}" value="${escapeAttribute(authDraft.account)}" required />
           </label>
           ${
             isRegister
               ? `<label>
                   <span>${text.nickname}</span>
-                  <input name="nickname" autocomplete="nickname" placeholder="${text.authNicknamePlaceholder}" value="${escapeAttribute(authDraft.nickname)}" />
+                  <input name="nickname" ${INPUT_HINTS_OFF} placeholder="${text.authNicknamePlaceholder}" value="${escapeAttribute(authDraft.nickname)}" />
                 </label>`
               : ""
           }
           <label>
             <span>${text.password}</span>
-            <input name="password" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}" placeholder="${text.authPasswordPlaceholder}" value="${escapeAttribute(authDraft.password)}" required />
+            <input name="password" type="password" ${INPUT_HINTS_OFF} placeholder="${text.authPasswordPlaceholder}" value="${escapeAttribute(authDraft.password)}" required />
           </label>
           <label>
             <span>${text.captcha}</span>
             <div class="captcha-row">
-              <input name="captchaCode" autocomplete="off" placeholder="${text.authCaptchaPlaceholder}" value="${escapeAttribute(authDraft.captchaCode)}" required />
+              <input name="captchaCode" ${INPUT_HINTS_OFF} placeholder="${text.authCaptchaPlaceholder}" value="${escapeAttribute(authDraft.captchaCode)}" required />
               <button class="captcha-img" type="button" data-auth-action="refresh-captcha" title="${text.captchaRefresh}">
                 ${captcha ? `<img src="${escapeAttribute(captcha.image)}" alt="${text.captcha}" />` : icon("refresh")}
               </button>
@@ -835,11 +846,11 @@ function profilePage() {
           <div class="form-grid">
             <label>
               <span>${text.account}</span>
-              <input name="account" value="${escapeAttribute(currentUser?.account || "")}" readonly aria-label="${text.accountReadonly}" />
+              <input name="account" ${INPUT_HINTS_OFF} value="${escapeAttribute(currentUser?.account || "")}" readonly aria-label="${text.accountReadonly}" />
             </label>
             <label>
               <span>${text.nickname}</span>
-              <input name="nickname" autocomplete="nickname" maxlength="32" value="${escapeAttribute(profileNickname)}" required />
+              <input name="nickname" ${INPUT_HINTS_OFF} maxlength="32" value="${escapeAttribute(profileNickname)}" required />
             </label>
           </div>
           <div class="settings-form-actions">
@@ -865,15 +876,15 @@ function passwordPage() {
           <div class="form-grid compact">
             <label>
               <span>${text.currentPassword}</span>
-              <input name="currentPassword" type="password" autocomplete="current-password" minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.currentPassword)}" required />
+              <input name="currentPassword" type="password" ${INPUT_HINTS_OFF} minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.currentPassword)}" required />
             </label>
             <label>
               <span>${text.newPassword}</span>
-              <input name="newPassword" type="password" autocomplete="new-password" minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.newPassword)}" required />
+              <input name="newPassword" type="password" ${INPUT_HINTS_OFF} minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.newPassword)}" required />
             </label>
             <label>
               <span>${text.confirmPassword}</span>
-              <input name="confirmPassword" type="password" autocomplete="new-password" minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.confirmPassword)}" required />
+              <input name="confirmPassword" type="password" ${INPUT_HINTS_OFF} minlength="6" maxlength="64" value="${escapeAttribute(passwordDraft.confirmPassword)}" required />
             </label>
           </div>
           <div class="settings-form-actions">
@@ -898,11 +909,11 @@ function feedbackPage() {
         <form class="settings-form" data-feedback-form>
           <label>
             <span>${text.feedbackContent}</span>
-            <textarea name="content" maxlength="2000" placeholder="${text.feedbackContentPlaceholder}" required>${escapeHtml(feedbackDraft.content)}</textarea>
+            <textarea name="content" ${INPUT_HINTS_OFF} maxlength="2000" placeholder="${text.feedbackContentPlaceholder}" required>${escapeHtml(feedbackDraft.content)}</textarea>
           </label>
           <label>
             <span>${text.feedbackContact}</span>
-            <input name="contact" maxlength="191" placeholder="${text.feedbackContactPlaceholder}" value="${escapeAttribute(feedbackDraft.contact)}" />
+            <input name="contact" ${INPUT_HINTS_OFF} maxlength="191" placeholder="${text.feedbackContactPlaceholder}" value="${escapeAttribute(feedbackDraft.contact)}" />
           </label>
           <div class="settings-form-actions">
             <button class="primary-btn" type="submit" ${feedbackBusy ? "disabled" : ""}>${icon("send")}${text.feedbackSubmit}</button>
@@ -1723,7 +1734,9 @@ function logout() {
 async function startLogin(platformId: string, loginTarget?: LoginTarget) {
   try {
     selectedPlatformId = platformId;
-    const request = loginTarget ? { platformId, loginTarget } : { platformId };
+    const request = loginTarget
+      ? { userId: requireCurrentUserId(), platformId, loginTarget }
+      : { userId: requireCurrentUserId(), platformId };
     activeAuthTask = await invokeCommand<StartLoginResponse>("start_channel_login", {
       request,
     });
@@ -1762,10 +1775,13 @@ async function checkAuthOnce(verbose = true) {
   try {
     const result = await invokeCommand<AuthTaskStatus>("get_auth_task_status", {
       taskId: activeAuthTask.taskId,
+      userId: requireCurrentUserId(),
     });
     if (result.status === "success") {
       stopAuthPolling();
-      accounts = await invokeCommand<ChannelAccount[]>("list_channel_accounts");
+      accounts = await invokeCommand<ChannelAccount[]>("list_channel_accounts", {
+        userId: requireCurrentUserId(),
+      });
       if (result.account) {
         await apiRequest<ChannelAccount>("/v1/channel/accounts", {
           method: "POST",
@@ -1809,7 +1825,10 @@ async function refreshAccount(accountId: string) {
   render();
   let toastMessage = "";
   try {
-    const updated = await invokeCommand<ChannelAccount>("refresh_channel_account", { accountId });
+    const updated = await invokeCommand<ChannelAccount>("refresh_channel_account", {
+      accountId,
+      userId: requireCurrentUserId(),
+    });
     await apiRequest<ChannelAccount>("/v1/channel/accounts", {
       method: "POST",
       body: backendAccountPayload(updated),
@@ -1834,7 +1853,10 @@ async function refreshPlatform(platformId: string) {
   let failedCount = 0;
   for (const account of list) {
     try {
-      const updated = await invokeCommand<ChannelAccount>("refresh_channel_account", { accountId: account.id });
+      const updated = await invokeCommand<ChannelAccount>("refresh_channel_account", {
+        accountId: account.id,
+        userId: requireCurrentUserId(),
+      });
       await apiRequest<ChannelAccount>("/v1/channel/accounts", {
         method: "POST",
         body: backendAccountPayload(updated),
@@ -1857,7 +1879,10 @@ async function refreshPlatform(platformId: string) {
 async function openHomepage(accountId: string) {
   if (!accountId) return;
   try {
-    await invokeCommand<void>("open_account_homepage", { accountId });
+    await invokeCommand<void>("open_account_homepage", {
+      accountId,
+      userId: requireCurrentUserId(),
+    });
   } catch (error) {
     showToast(normalizeError(error));
   }
@@ -1866,7 +1891,10 @@ async function openHomepage(accountId: string) {
 async function deleteAccount(accountId: string) {
   if (!accountId) return;
   try {
-    await invokeCommand<void>("delete_channel_account", { accountId });
+    await invokeCommand<void>("delete_channel_account", {
+      accountId,
+      userId: requireCurrentUserId(),
+    });
     await apiRequest<void>(`/v1/channel/accounts/${encodeURIComponent(accountId)}`, {
       method: "DELETE",
     }).catch(() => undefined);
