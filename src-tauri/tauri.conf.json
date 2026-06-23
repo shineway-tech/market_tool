@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCNkRENkIxRUYyMEZBClJXVDZJTyt4MW0yTEFGc2ZWM2p1MFZ4K09DWWdUVmJ1ZGtLNW9HMWJhR1VBOW8xV1g2NUpLV3N6Cg==",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxMTJBQkRCM0Y5MTA4OTQKUldTVUNKRS8yNnNTd1hrTkc5a2R5OXlHRHBjVjRWeHJUMmUxWmhlbW1BcHNTREY4T0xxeHNjNlEK",
       "endpoints": [
         "https://market-api.honeykid.cn/v1/desktop-updates/{{target}}/{{arch}}/{{current_version}}"
       ],
