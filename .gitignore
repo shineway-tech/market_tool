@@ -38,6 +38,7 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+.secret/
 .secrets/
 server/marketing-master-api/.npmrc
 server/marketing-master-api/config/config.json
