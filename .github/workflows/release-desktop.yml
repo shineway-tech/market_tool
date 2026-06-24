@@ -271,7 +271,8 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path release-portable | Out-Null
-          Copy-Item "src-tauri/target/release/marketing-master.exe" "release-portable/marketing-master_${env:GITHUB_REF_NAME}_windows_x64_portable.exe" -Force
+          $appVersion = (Get-Content "package.json" | ConvertFrom-Json).version
+          Copy-Item "src-tauri/target/release/marketing-master.exe" "release-portable/营销大师_${appVersion}_windows_x64_portable.exe" -Force
 
       - name: Upload Windows portable exe release asset
         if: startsWith(github.ref, 'refs/tags/')
