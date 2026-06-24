@@ -1,11 +1,11 @@
 {
   "name": "marketing-master",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420",
-    "build": "tsc --noEmit && vite build",
+    "dev": "vite --config frontend/vite.config.ts --host 127.0.0.1 --port 1420",
+    "build": "tsc --project frontend/tsconfig.json --noEmit && vite build --config frontend/vite.config.ts",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

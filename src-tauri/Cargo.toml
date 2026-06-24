@@ -1,6 +1,6 @@
 [package]
 name = "marketing-master"
-version = "1.0.0"
+version = "1.0.1"
 description = "营销大师桌面客户端"
 authors = ["fanxiao"]
 edition = "2021"

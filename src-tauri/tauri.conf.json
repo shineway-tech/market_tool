@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "营销大师",
-  "version": "1.0.0",
+  "productName": "market_tool",
+  "version": "1.0.1",
   "identifier": "com.marketingmaster.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
       {
-        "title": "营销大师",
+        "title": "market_tool",
         "width": 1280,
         "height": 820,
         "minWidth": 1040,

@@ -227,6 +227,7 @@ struct PendingAuth {
     relay_window_label: Option<String>,
     douyin_cookie_account: Option<ChannelAccount>,
     douyin_cookie_window_label: Option<String>,
+    douyin_cookie_window_opened_at: Option<DateTime<Utc>>,
     plugin_window_label: Option<String>,
     plugin_login_target: Option<String>,
     created_at: DateTime<Utc>,
@@ -496,6 +497,7 @@ async fn start_channel_login(
                 relay_window_label: relay_window_label.clone(),
                 douyin_cookie_account: None,
                 douyin_cookie_window_label: None,
+                douyin_cookie_window_opened_at: None,
                 plugin_window_label: plugin_window_label.clone(),
                 plugin_login_target: plugin_login_target.clone(),
                 created_at: Utc::now(),
@@ -538,19 +540,45 @@ async fn get_auth_task_status(
     if let Some(task) = pending_task.clone() {
         if normalize_platform_id(&task.platform_id) == "douyin" {
             if let Some(account) = task.douyin_cookie_account.clone() {
-                let existing_window_label = task
-                    .douyin_cookie_window_label
+                let configured_window_label = task.douyin_cookie_window_label.clone();
+                let existing_window_label = configured_window_label
                     .clone()
                     .filter(|label| app.get_webview_window(label).is_some());
-                let login_cookie = existing_window_label
-                    .as_deref()
-                    .and_then(|label| {
-                        capture_auth_window_login_cookie(&app, Some(label), DOUYIN_COOKIE_URLS)
-                    })
-                    .or_else(|| take_pending_auth_cookie(&app, &task_id).ok().flatten());
+
+                if configured_window_label.is_some() && existing_window_label.is_none() {
+                    state
+                        .pending_auth
+                        .lock()
+                        .map_err(lock_error)?
+                        .remove(&task_id);
+                    let _ = take_pending_auth_cookie(&app, &task_id);
+                    return Ok(AuthTaskStatus {
+                        task_id,
+                        status: "failed".to_string(),
+                        account: None,
+                        message: Some("抖音网页登录窗口已关闭，授权流程已中断。".to_string()),
+                    });
+                }
+
+                let cookie_window_ready = task
+                    .douyin_cookie_window_opened_at
+                    .map(|opened_at| Utc::now().signed_duration_since(opened_at) >= Duration::seconds(8))
+                    .unwrap_or(true);
+                let login_cookie = if cookie_window_ready {
+                    existing_window_label
+                        .as_deref()
+                        .and_then(|label| {
+                            capture_auth_window_login_cookie(&app, Some(label), DOUYIN_COOKIE_URLS)
+                        })
+                        .or_else(|| take_pending_auth_cookie(&app, &task_id).ok().flatten())
+                } else {
+                    None
+                };
 
                 if let Some(login_cookie) = login_cookie.as_deref() {
+                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     upsert_account_secret(&app, &account.id, login_cookie)?;
+                    upsert_account_webview_session(&app, &account.id, &task_id)?;
                     state
                         .pending_auth
                         .lock()
@@ -576,6 +604,7 @@ async fn get_auth_task_status(
                         let mut pending = state.pending_auth.lock().map_err(lock_error)?;
                         if let Some(existing) = pending.get_mut(&task_id) {
                             existing.douyin_cookie_window_label = Some(label.clone());
+                            existing.douyin_cookie_window_opened_at = Some(Utc::now());
                         }
                         label
                     }
@@ -725,7 +754,6 @@ async fn get_auth_task_status(
                     let account = account
                         .clone()
                         .ok_or_else(|| "抖音授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
-                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     let _ = take_pending_auth_cookie(&app, &task_id);
                     close_auth_window_by_label(&app, task.relay_window_label.as_deref());
                     eprintln!(
@@ -741,6 +769,7 @@ async fn get_auth_task_status(
                             existing.relay_window_label = None;
                             existing.douyin_cookie_account = Some(account);
                             existing.douyin_cookie_window_label = Some(cookie_window_label);
+                            existing.douyin_cookie_window_opened_at = Some(Utc::now());
                         }
                     }
                     return Ok(AuthTaskStatus {
@@ -1023,7 +1052,12 @@ async fn open_account_homepage(
     ?;
 
     if normalize_platform_id(&account.platform_id) == "douyin" {
-        return open_douyin_creator_webview(&app, &account, saved_login_cookie.as_deref());
+        return open_douyin_creator_webview(
+            &app,
+            &account,
+            saved_login_cookie.as_deref(),
+            saved_webview_session_id.as_deref(),
+        );
     }
     if normalize_platform_id(&account.platform_id) == "xiaohongshu" {
         let mut login_cookie = saved_login_cookie;
@@ -1603,6 +1637,7 @@ fn open_douyin_creator_webview(
     app: &AppHandle,
     account: &ChannelAccount,
     saved_login_cookie: Option<&str>,
+    saved_webview_session_id: Option<&str>,
 ) -> Result<(), String> {
     let url = Url::parse(DOUYIN_CREATOR_HOME_URL).map_err(|error| format!("抖音创作者中心地址无效: {error}"))?;
     let window_key = stable_label_fragment(&account.id);
@@ -1615,35 +1650,57 @@ fn open_douyin_creator_webview(
     let title = format!("{title_name} - 抖音创作者中心");
 
     if let Some(window) = app.get_webview_window(&label) {
+        let should_delay_navigation = saved_login_cookie.is_some();
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_douyin_login_cookie(&window, login_cookie);
         }
         let _ = window.set_title(&title);
-        let _ = window.navigate(url);
+        if should_delay_navigation {
+            navigate_webview_after_delay(window.clone(), url.clone());
+        } else {
+            let _ = window.navigate(url);
+        }
         let _ = window.show();
         let _ = window.set_focus();
         return Ok(());
     }
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建抖音创作者中心数据目录: {error}"))?
-        .join("creator-home")
-        .join("douyin")
-        .join(&window_key);
+    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
+        (
+            app.path()
+                .app_data_dir()
+                .map_err(|error| format!("无法创建抖音创作者中心数据目录: {error}"))?
+                .join("auth-sessions")
+                .join("douyin")
+                .join(stable_label_fragment(session_id)),
+            task_data_store_identifier(session_id),
+        )
+    } else {
+        (
+            app.path()
+                .app_data_dir()
+                .map_err(|error| format!("无法创建抖音创作者中心数据目录: {error}"))?
+                .join("creator-home")
+                .join("douyin")
+                .join(&window_key),
+            stable_data_store_identifier(&format!("creator-home:douyin:{}", account.id)),
+        )
+    };
     let account_id = account.id.clone();
     let app_for_load = app.clone();
 
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
+    let initial_url = if saved_login_cookie.is_some() {
+        Url::parse("about:blank").map_err(|error| format!("空白页地址无效: {error}"))?
+    } else {
+        url.clone()
+    };
+
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(initial_url))
         .title(&title)
         .inner_size(1180.0, 820.0)
         .min_inner_size(980.0, 680.0)
         .data_directory(data_dir)
-        .data_store_identifier(stable_data_store_identifier(&format!(
-            "creator-home:douyin:{}",
-            account.id
-        )))
+        .data_store_identifier(data_store_identifier)
         .user_agent(DESKTOP_CHROME_UA)
         .on_page_load(move |window, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
@@ -1663,10 +1720,19 @@ fn open_douyin_creator_webview(
 
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_douyin_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
+        navigate_webview_after_delay(window.clone(), url);
     }
 
     Ok(())
+}
+
+fn navigate_webview_after_delay(window: WebviewWindow<tauri::Wry>, url: Url) {
+    tauri::async_runtime::spawn(async move {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let _ = window.navigate(url);
+        let _ = window.show();
+        let _ = window.set_focus();
+    });
 }
 
 fn open_xhs_creator_webview(
@@ -2026,7 +2092,6 @@ fn open_douyin_cookie_binding_window(
     saved_login_cookie: Option<&str>,
 ) -> Result<String, String> {
     let url = Url::parse(DOUYIN_CREATOR_HOME_URL).map_err(|error| format!("抖音创作者中心地址无效: {error}"))?;
-    let account_key = stable_label_fragment(&account.id);
     let label = format!("douyin-cookie-bind-{}", task_suffix(task_id));
     let title_name = if account.nickname.trim().is_empty() {
         "抖音账号"
@@ -2045,8 +2110,11 @@ fn open_douyin_cookie_binding_window(
         }
         let _ = window.set_title(&title);
         let _ = window.navigate(url);
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
+        eprintln!("[douyin-auth] focused existing cookie binding window label={label}");
         return Ok(label);
     }
 
@@ -2054,11 +2122,9 @@ fn open_douyin_cookie_binding_window(
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法创建抖音登录态数据目录: {error}"))?
-        .join("creator-home")
+        .join("auth-sessions")
         .join("douyin")
-        .join(&account_key);
-    let app_for_load = app.clone();
-    let task_id_for_load = task_id.to_string();
+        .join(stable_label_fragment(task_id));
 
     let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
         .title(&title)
@@ -2067,29 +2133,18 @@ fn open_douyin_cookie_binding_window(
         .visible(true)
         .focused(true)
         .focusable(true)
+        .always_on_top(true)
         .data_directory(data_dir)
-        .data_store_identifier(stable_data_store_identifier(&format!(
-            "creator-home:douyin:{}",
-            account.id
-        )))
+        .data_store_identifier(task_data_store_identifier(task_id))
         .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_douyin_web_url(payload.url())
-            {
-                let _ = remember_pending_auth_cookie_from_window(
-                    &app_for_load,
-                    &task_id_for_load,
-                    &window,
-                    DOUYIN_COOKIE_URLS,
-                );
-            }
-        })
         .center()
         .build()
         .map_err(|error| format!("打开抖音登录态绑定窗口失败: {error}"))?;
+    let _ = window.unminimize();
+    let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.set_focus();
+    eprintln!("[douyin-auth] opened cookie binding window label={label}");
 
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_douyin_login_cookie(&window, login_cookie);
@@ -2429,23 +2484,6 @@ fn persist_webview_account_cookies_any(
         return Ok(());
     }
     upsert_account_secret(app, account_id, &login_cookie)
-}
-
-fn remember_pending_auth_cookie_from_window(
-    app: &AppHandle,
-    task_id: &str,
-    window: &WebviewWindow<tauri::Wry>,
-    urls: &[&str],
-) -> Result<(), String> {
-    let Some(login_cookie) = collect_webview_login_cookie(window, urls)? else {
-        return Ok(());
-    };
-    app.state::<RuntimeState>()
-        .pending_auth_cookies
-        .lock()
-        .map_err(lock_error)?
-        .insert(task_id.to_string(), login_cookie);
-    Ok(())
 }
 
 fn take_pending_auth_cookie(app: &AppHandle, task_id: &str) -> Result<Option<String>, String> {
@@ -4094,6 +4132,47 @@ async fn finish_relay_callback(
         .get(&task_id)
         .map(|task| task.user_id.clone())
         .ok_or_else(|| "授权任务不存在或已过期".to_string())?;
+
+    if platform_id == "douyin" {
+        let account = ChannelAccount {
+            id: Uuid::new_v4().to_string(),
+            user_id: None,
+            platform_id,
+            uid,
+            nickname,
+            avatar,
+            followers: None,
+            status: AccountStatus::Active,
+            relay_account_ref,
+            token: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            last_sync_at: Some(Utc::now()),
+        };
+        let task = app
+            .state::<RuntimeState>()
+            .pending_auth
+            .lock()
+            .map_err(lock_error)?
+            .get(&task_id)
+            .cloned();
+        if let Some(task) = task {
+            close_auth_window_by_label(app, task.relay_window_label.as_deref());
+        }
+        let cookie_window_label = open_douyin_cookie_binding_window(app, &task_id, &account, None)?;
+        {
+            let state = app.state::<RuntimeState>();
+            let mut pending = state.pending_auth.lock().map_err(lock_error)?;
+            if let Some(existing) = pending.get_mut(&task_id) {
+                existing.relay_session_id = None;
+                existing.relay_window_label = None;
+                existing.douyin_cookie_account = Some(account.clone());
+                existing.douyin_cookie_window_label = Some(cookie_window_label);
+                existing.douyin_cookie_window_opened_at = Some(Utc::now());
+            }
+        }
+        return Ok(account);
+    }
 
     upsert_account_for_user(
         app,

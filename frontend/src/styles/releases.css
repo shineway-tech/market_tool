@@ -1,0 +1,246 @@
+.release-controls,
+.release-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(8, 27, 31, 0.72);
+}
+
+.release-card-head,
+.release-title-block,
+.release-control-main,
+.release-actions,
+.switch-row {
+  display: flex;
+  align-items: center;
+}
+
+.release-card-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.release-controls {
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.release-control-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.release-control-main {
+  min-width: 0;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.release-title-block {
+  min-width: 0;
+  gap: 12px;
+}
+
+.release-toggle {
+  flex: 0 0 auto;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 0 9px;
+  color: var(--muted);
+  background: rgba(143, 167, 173, 0.06);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.release-toggle:hover {
+  color: var(--text);
+  border-color: rgba(22, 230, 138, 0.26);
+  background: rgba(22, 230, 138, 0.08);
+}
+
+.release-toggle .svg-icon {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+
+.release-toggle.is-open .svg-icon {
+  transform: rotate(90deg);
+}
+
+.release-version-icon,
+.release-icon {
+  display: grid;
+  place-items: center;
+  color: var(--green);
+  background: rgba(22, 230, 138, 0.12);
+}
+
+.release-version-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.release-title-block h2 {
+  font-size: 15px;
+}
+
+.release-title-block span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.release-status {
+  flex: 0 0 auto;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid rgba(22, 230, 138, 0.2);
+  border-radius: 7px;
+  color: var(--green);
+  background: rgba(22, 230, 138, 0.09);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.release-status.status-error {
+  color: #ff8e8e;
+  background: rgba(255, 99, 99, 0.1);
+  border-color: rgba(255, 99, 99, 0.2);
+}
+
+.release-status.status-checking,
+.release-status.status-downloading {
+  color: #86d7ff;
+  background: rgba(111, 208, 255, 0.1);
+  border-color: rgba(111, 208, 255, 0.2);
+}
+
+.switch-row {
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.switch-row input {
+  width: 34px;
+  height: 18px;
+  appearance: none;
+  position: relative;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: rgba(143, 167, 173, 0.2);
+  cursor: pointer;
+}
+
+.switch-row input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.switch-row input:checked {
+  border-color: rgba(22, 230, 138, 0.36);
+  background: rgba(22, 230, 138, 0.18);
+}
+
+.switch-row input:checked::after {
+  transform: translateX(16px);
+  background: var(--green);
+}
+
+.switch-row em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.release-actions {
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.release-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(143, 167, 173, 0.16);
+}
+
+.release-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 0.2s ease;
+}
+
+.release-list {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.release-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.release-item + .release-item {
+  border-top: 1px solid var(--line);
+}
+
+.release-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+}
+
+.release-icon .svg-icon,
+.release-version-icon .svg-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.release-item h3 {
+  font-size: 14px;
+}
+
+.release-item ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.release-item li + li {
+  margin-top: 2px;
+}

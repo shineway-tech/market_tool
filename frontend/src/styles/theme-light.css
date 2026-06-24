@@ -1,0 +1,255 @@
+.theme-light.window,
+.theme-light .window {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), transparent 180px),
+    radial-gradient(circle at 90% 0%, rgba(20, 143, 112, 0.045), transparent 320px),
+    var(--window);
+}
+
+.theme-light .appbar {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafb 100%);
+  border-bottom-color: rgba(32, 70, 78, 0.11);
+}
+
+.theme-light .brand-mark {
+  color: #ffffff;
+  background: #148f70;
+}
+
+.theme-light .sidebar {
+  background: linear-gradient(180deg, #eef2f4, #e7edf0);
+  border-right-color: rgba(32, 70, 78, 0.12);
+}
+
+.theme-light .search {
+  border-color: rgba(32, 70, 78, 0.11);
+}
+
+.theme-light .avatar-btn {
+  color: #0f624f;
+  background: #e5f2ee;
+  box-shadow: inset 0 0 0 1px rgba(20, 143, 112, 0.16);
+}
+
+.theme-light .user-dropdown {
+  background: #ffffff;
+  border-color: rgba(32, 70, 78, 0.13);
+  box-shadow: 0 18px 42px rgba(21, 67, 74, 0.16);
+}
+
+.theme-light .user-menu-item:hover {
+  color: #12343a;
+  background: #eef7f4;
+}
+
+.theme-light .user-menu-item.danger:hover {
+  color: var(--danger);
+  background: rgba(201, 80, 92, 0.1);
+}
+
+.theme-light .nav-item {
+  color: #5f747a;
+}
+
+.theme-light .nav-item:not(.active):hover {
+  color: #1b3339;
+  background: rgba(32, 70, 78, 0.055);
+  box-shadow: none;
+}
+
+.theme-light .nav-item.active {
+  color: #12343a;
+  background: #dfeeea;
+  box-shadow:
+    inset 3px 0 0 var(--green),
+    inset 0 0 0 1px rgba(20, 143, 112, 0.14);
+}
+
+.theme-light .channel-head h1,
+.theme-light .page-head h1,
+.theme-light .selected-platform h2,
+.theme-light .account-summary strong,
+.theme-light .account-line h3,
+.theme-light .settings-card h2,
+.theme-light .release-title-block h2,
+.theme-light .release-item h3,
+.theme-light .placeholder-panel h2,
+.theme-light .empty-state h3 {
+  color: #1b3339;
+}
+
+.theme-light .platform-panel,
+.theme-light .account-panel,
+.theme-light .settings-card,
+.theme-light .placeholder-panel,
+.theme-light .activity-panel,
+.theme-light .release-controls,
+.theme-light .release-card,
+.theme-light .auth-modal,
+.theme-light .settings-modal {
+  background: #ffffff;
+  border-color: rgba(32, 70, 78, 0.13);
+  box-shadow: 0 1px 2px rgba(20, 52, 58, 0.05);
+}
+
+.theme-light .panel-title {
+  border-bottom-color: rgba(32, 70, 78, 0.1);
+}
+
+.theme-light .panel-title strong,
+.theme-light .placeholder-icon,
+.theme-light .release-version-icon,
+.theme-light .release-icon {
+  color: #0f765e;
+  background: #e4f2ee;
+}
+
+.theme-light .platform-item:hover {
+  background: #f4f8f8;
+  border-color: rgba(32, 70, 78, 0.12);
+}
+
+.theme-light .platform-item.active {
+  background: #e5f2ee;
+  border-color: rgba(20, 143, 112, 0.22);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.theme-light .platform-copy em,
+.theme-light .account-meta,
+.theme-light .account-summary span,
+.theme-light .page-head p,
+.theme-light .channel-head p,
+.theme-light .account-panel-head p,
+.theme-light .settings-card p,
+.theme-light .placeholder-panel p,
+.theme-light .release-title-block span,
+.theme-light .release-item ul,
+.theme-light .activity-row p {
+  color: #687b80;
+}
+
+.theme-light .release-list,
+.theme-light .release-item + .release-item {
+  border-color: rgba(32, 70, 78, 0.1);
+}
+
+.theme-light .release-status {
+  color: #0f765e;
+  background: #eaf5f1;
+  border-color: rgba(20, 143, 112, 0.16);
+}
+
+.theme-light .release-toggle {
+  color: #687b80;
+  background: #f7faf9;
+  border-color: rgba(32, 70, 78, 0.13);
+}
+
+.theme-light .release-toggle:hover {
+  color: #173036;
+  background: #eef7f4;
+  border-color: rgba(20, 143, 112, 0.18);
+}
+
+.theme-light .switch-row input {
+  background: #edf3f4;
+}
+
+.theme-light .count,
+.theme-light .mini-login {
+  color: #0f765e;
+}
+
+.theme-light .mini-login {
+  background: #eef7f4;
+  border-color: rgba(20, 143, 112, 0.18);
+}
+
+.theme-light .mini-login:hover {
+  color: #0a5f4b;
+  background: #dff0ea;
+  border-color: rgba(20, 143, 112, 0.3);
+}
+
+.theme-light .primary-btn {
+  color: #ffffff;
+  background: #148f70;
+  border-color: #148f70;
+}
+
+.theme-light .primary-btn:hover {
+  color: #ffffff;
+  background: #0f7b61;
+  border-color: #0f7b61;
+}
+
+.theme-light .ghost-btn,
+.theme-light .icon-btn,
+.theme-light .collapse {
+  color: #38565d;
+  background: #ffffff;
+  border-color: rgba(32, 70, 78, 0.16);
+}
+
+.theme-light .ghost-btn:hover,
+.theme-light .icon-btn:hover,
+.theme-light .collapse:hover {
+  color: #12343a;
+  background: #f2f7f6;
+  border-color: rgba(20, 143, 112, 0.3);
+}
+
+.theme-light .account-card,
+.theme-light .activity-row {
+  background: #f8fbfb;
+  border-color: rgba(32, 70, 78, 0.1);
+}
+
+.theme-light .account-avatar {
+  color: #0f624f;
+  background: #e4f2ee;
+}
+
+.theme-light .status.active {
+  color: #0b6d57;
+  background: #dff1eb;
+}
+
+.theme-light .status.expired {
+  color: #946200;
+  background: #fff2ce;
+}
+
+.theme-light .status.pending {
+  color: #246a96;
+  background: #e3f1fb;
+}
+
+.theme-light input,
+.theme-light select,
+.theme-light textarea {
+  border-color: rgba(32, 70, 78, 0.16);
+  background-color: #ffffff;
+}
+
+.theme-light select:hover,
+.theme-light select:focus,
+.theme-light input:hover,
+.theme-light input:focus,
+.theme-light textarea:hover,
+.theme-light textarea:focus {
+  border-color: rgba(20, 143, 112, 0.32);
+  background-color: #f9fcfb;
+}
+
+.theme-light input[readonly] {
+  color: #687b80;
+  background-color: #f2f6f7;
+}
+
+.theme-light .toast {
+  color: #effff9;
+  background: #17383b;
+  border-color: rgba(20, 143, 112, 0.24);
+}

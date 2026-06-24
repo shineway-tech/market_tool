@@ -1,0 +1,135 @@
+.auth-shell {
+  width: 100vw;
+  height: 100vh;
+  min-width: 1040px;
+  min-height: 680px;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 180px),
+    radial-gradient(circle at 74% 12%, rgba(22, 230, 138, 0.09), transparent 300px),
+    var(--window);
+}
+
+.auth-card {
+  width: 430px;
+  padding: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(8, 27, 31, 0.78);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.28);
+}
+
+.theme-light.auth-shell .auth-card {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 24px 60px rgba(21, 67, 74, 0.14);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.auth-brand strong,
+.auth-brand span {
+  display: block;
+}
+
+.auth-brand strong {
+  font-size: 18px;
+  color: var(--text);
+}
+
+.auth-brand span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+  padding-top: 22px;
+}
+
+.login-form label span {
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+}
+
+.login-form input::placeholder {
+  color: color-mix(in srgb, var(--muted) 82%, var(--text));
+  opacity: 1;
+}
+
+.auth-form-head h1 {
+  font-size: 23px;
+  color: #f5fbfb;
+}
+
+.theme-light .auth-form-head h1 {
+  color: #143036;
+}
+
+.captcha-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 10px;
+}
+
+.captcha-img {
+  width: 132px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: rgba(3, 15, 18, 0.72);
+  cursor: pointer;
+}
+
+.captcha-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.auth-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: 2px;
+  display: grid;
+  grid-template-columns: 18px auto 18px;
+  column-gap: 8px;
+}
+
+.auth-submit:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.auth-submit:disabled .auth-submit-icon .svg-icon {
+  animation: spin 0.9s linear infinite;
+}
+
+.auth-submit-icon {
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+}
+
+.auth-submit-icon.is-visible {
+  opacity: 1;
+}
+
+.auth-switch {
+  width: fit-content;
+  justify-self: center;
+  color: var(--green);
+  font-weight: 800;
+  cursor: pointer;
+}

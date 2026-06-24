@@ -92,6 +92,6 @@ GitHub Release 产物出来后，需要把对应平台的下载地址和 `.sig` 
 
 如果后端继续使用本地文件下载，则把 Release 里的 updater 包下载到：
 
-`server/marketing-master-api/public/desktop-updates`
+`backend/marketing-master-api/public/desktop-updates`
 
 并更新生产配置中的 `desktop_update.platforms`。

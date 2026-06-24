@@ -205,9 +205,9 @@ jobs:
             exit 1
           fi
 
-          cp "$dmg_file" "$output_dir/营销大师_${app_version}_macos_${arch}.dmg"
-          cp "$app_tar_file" "$output_dir/营销大师_${app_version}_macos_${arch}.app.tar.gz"
-          cp "$app_sig_file" "$output_dir/营销大师_${app_version}_macos_${arch}.app.tar.gz.sig"
+          cp "$dmg_file" "$output_dir/market_tool_${app_version}_macos_${arch}.dmg"
+          cp "$app_tar_file" "$output_dir/market_tool_${app_version}_macos_${arch}.app.tar.gz"
+          cp "$app_sig_file" "$output_dir/market_tool_${app_version}_macos_${arch}.app.tar.gz.sig"
 
       - name: Upload macOS release assets
         if: startsWith(github.ref, 'refs/tags/')
@@ -272,7 +272,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-portable | Out-Null
           $appVersion = (Get-Content "package.json" | ConvertFrom-Json).version
-          Copy-Item "src-tauri/target/release/marketing-master.exe" "release-portable/营销大师_${appVersion}_windows_x64_portable.exe" -Force
+          Copy-Item "src-tauri/target/release/marketing-master.exe" "release-portable/market_tool_${appVersion}_windows_x64_portable.exe" -Force
 
       - name: Upload Windows portable exe release asset
         if: startsWith(github.ref, 'refs/tags/')

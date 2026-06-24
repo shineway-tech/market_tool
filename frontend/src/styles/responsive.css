@@ -1,0 +1,19 @@
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1120px) {
+  .channel-layout {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .release-control-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .release-actions {
+    justify-content: flex-start;
+  }
+}

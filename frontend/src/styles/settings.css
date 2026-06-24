@@ -1,0 +1,126 @@
+.settings-grid-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  width: min(720px, 100%);
+}
+
+.settings-grid-compact {
+  width: min(720px, 100%);
+  gap: 8px;
+}
+
+.single-form-page {
+  width: min(720px, 100%);
+  display: grid;
+  gap: 16px;
+}
+
+.release-page {
+  width: min(720px, 100%);
+  display: grid;
+  gap: 8px;
+}
+
+.settings-card,
+.placeholder-panel,
+.activity-panel {
+  background: rgba(8, 27, 31, 0.72);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+}
+
+.theme-light .settings-card,
+.theme-light .placeholder-panel,
+.theme-light .activity-panel,
+.theme-light .release-controls,
+.theme-light .release-card,
+.theme-light .platform-panel,
+.theme-light .account-panel {
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 18px 42px rgba(21, 67, 74, 0.12);
+}
+
+.settings-card {
+  min-height: 132px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  align-items: center;
+  gap: 18px;
+  padding: 20px;
+}
+
+.settings-grid-compact .settings-card {
+  min-height: 52px;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 12px;
+  padding: 8px 12px;
+  box-shadow: none;
+}
+
+.settings-grid-compact .settings-card h2 {
+  font-size: 14px;
+}
+
+.settings-grid-compact select {
+  height: 34px;
+}
+
+.settings-card.wide {
+  grid-column: 1 / -1;
+}
+
+.settings-card-form {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: flex-start;
+}
+
+.settings-form {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.settings-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-card h2,
+.placeholder-panel h2,
+.activity-row h3 {
+  font-size: 17px;
+}
+
+.settings-card p,
+.placeholder-panel p,
+.activity-row p {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.placeholder-panel {
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+
+.placeholder-icon {
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  color: var(--green);
+  background: rgba(22, 230, 138, 0.12);
+}
+
+.placeholder-icon .svg-icon {
+  width: 28px;
+  height: 28px;
+}
