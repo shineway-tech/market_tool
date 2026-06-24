@@ -19,6 +19,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Reset draft release for tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -53,9 +59,11 @@ jobs:
           - name: macOS Intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
+            artifact_arch: x64
           - name: macOS Apple Silicon
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
+            artifact_arch: aarch64
 
     steps:
       - name: Checkout
@@ -147,29 +155,78 @@ jobs:
           chmod 600 "$API_KEY_PATH"
           echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Build and publish macOS Tauri app
-        uses: tauri-apps/tauri-action@v0
+      - name: Build macOS Tauri app with retry
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           MARKETING_MASTER_RELAY_API_KEY: ${{ secrets.MARKETING_MASTER_RELAY_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            echo "macOS build attempt ${attempt}/3"
+            if ! curl --connect-timeout 15 --max-time 30 -fsSI https://appstoreconnect.apple.com/ >/dev/null; then
+              echo "Apple services network preflight failed; continuing so the build can retry notarization normally."
+            fi
+
+            if npm run tauri -- build --verbose ${{ matrix.args }}; then
+              exit 0
+            fi
+
+            if [ "$attempt" = "3" ]; then
+              echo "macOS build failed after ${attempt} attempts."
+              exit 1
+            fi
+
+            rm -rf "src-tauri/target/${{ matrix.rust-target }}/release/bundle"
+            sleep $((attempt * 90))
+          done
+
+      - name: Prepare macOS release artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+
+          app_version="$(node -p "require('./package.json').version")"
+          arch="${{ matrix.artifact_arch }}"
+          bundle_dir="src-tauri/target/${{ matrix.rust-target }}/release/bundle"
+          output_dir="release-macos"
+          mkdir -p "$output_dir"
+
+          dmg_file="$(find "$bundle_dir/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
+          app_tar_file="$(find "$bundle_dir/macos" -maxdepth 1 -name '*.app.tar.gz' -print -quit)"
+          app_sig_file="$(find "$bundle_dir/macos" -maxdepth 1 -name '*.app.tar.gz.sig' -print -quit)"
+
+          if [ -z "$dmg_file" ] || [ -z "$app_tar_file" ] || [ -z "$app_sig_file" ]; then
+            echo "Missing expected macOS release artifacts."
+            find "$bundle_dir" -maxdepth 4 -type f -print
+            exit 1
+          fi
+
+          cp "$dmg_file" "$output_dir/营销大师_${app_version}_macos_${arch}.dmg"
+          cp "$app_tar_file" "$output_dir/营销大师_${app_version}_macos_${arch}.app.tar.gz"
+          cp "$app_sig_file" "$output_dir/营销大师_${app_version}_macos_${arch}.app.tar.gz.sig"
+
+      - name: Upload macOS release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: v__VERSION__
-          releaseName: Marketing Master v__VERSION__
-          releaseBody: |
+          tag_name: ${{ github.ref_name }}
+          name: Marketing Master ${{ github.ref_name }}
+          body: |
             Desktop release for Marketing Master.
 
             Built targets:
             - macOS Intel
             - macOS Apple Silicon
             - Windows x64 portable exe
-          releaseDraft: true
+          draft: true
           prerelease: false
-          args: ${{ matrix.args }}
-          assetNamePattern: "[name]_[version]_[platform]_[arch]_[bundle].[ext]"
+          files: release-macos/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows:
     name: Build Windows x64 portable exe
