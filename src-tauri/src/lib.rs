@@ -5,80 +5,47 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    env,
     fs,
     io,
     path::PathBuf,
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
+        Arc,
         Mutex,
     },
 };
-use tauri::{webview::Cookie, AppHandle, Manager, State};
+use tauri::{webview::Cookie, AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::oneshot,
 };
 use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::{form_urlencoded, Url};
 use uuid::Uuid;
 
+mod channels;
+mod common;
+mod http_callback;
+mod json_ext;
+mod local_store;
+mod settings;
+mod webview_windows;
+
+use common::*;
+use http_callback::*;
+use json_ext::*;
+use local_store::*;
+use settings::*;
+use webview_windows::*;
+
 const CALLBACK_PORT_START: u16 = 17654;
 const CALLBACK_PORT_END: u16 = 17674;
 const RELAY_SERVER_URL: &str = "https://aitoearn.cn/api";
-const RELAY_API_KEY: &str = match option_env!("MARKETING_MASTER_RELAY_API_KEY") {
-    Some(value) => value,
-    None => "",
-};
 const DESKTOP_CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-const DOUYIN_CREATOR_HOME_URL: &str =
-    "https://creator.douyin.com/creator-micro/home?enter_from=dou_web";
-const DOUYIN_COOKIE_URLS: &[&str] = &[
-    "https://www.douyin.com/",
-    "https://douyin.com/",
-    "https://creator.douyin.com/",
-    "https://passport.douyin.com/",
-    "https://sso.douyin.com/",
-];
-const XHS_CREATOR_HOME_URL: &str = "https://creator.xiaohongshu.com/";
-const XHS_COOKIE_URLS: &[&str] = &[
-    "https://www.xiaohongshu.com/",
-    "https://creator.xiaohongshu.com/",
-    "https://edith.xiaohongshu.com/",
-];
-const WECHAT_CHANNELS_HOME_URL: &str = "https://channels.weixin.qq.com/platform";
-const WECHAT_CHANNELS_COOKIE_URLS: &[&str] = &[
-    "https://channels.weixin.qq.com/",
-    "https://channels.weixin.qq.com/platform",
-];
-const BILIBILI_CREATOR_HOME_URL: &str = "https://member.bilibili.com/platform/home";
-const BILIBILI_COOKIE_URLS: &[&str] = &[
-    "https://www.bilibili.com/",
-    "https://bilibili.com/",
-    "https://passport.bilibili.com/",
-    "https://member.bilibili.com/",
-    "https://space.bilibili.com/",
-];
-const KUAISHOU_CREATOR_HOME_URL: &str = "https://cp.kuaishou.com/";
-const KUAISHOU_COOKIE_URLS: &[&str] = &[
-    "https://www.kuaishou.com/",
-    "https://kuaishou.com/",
-    "https://cp.kuaishou.com/",
-    "https://id.kuaishou.com/",
-    "https://passport.kuaishou.com/",
-];
-const DOUYIN_LOGIN_COOKIE_NAMES: &[&str] = &[
-    "sessionid",
-    "sessionid_ss",
-    "sid_guard",
-    "sid_tt",
-    "uid_tt",
-    "uid_tt_ss",
-    "sso_uid_tt",
-    "sso_uid_tt_ss",
-    "passport_auth_status",
-    "passport_auth_status_ss",
-];
+const CHANNEL_ACCOUNT_UPDATED_EVENT: &str = "channel-account-updated";
 const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 const FOLLOWER_COUNT_KEYS: &[&str] = &[
     "fans_count",
@@ -109,6 +76,61 @@ const FOLLOWER_COUNT_KEYS: &[&str] = &[
     "fanCountShow",
     "followersCountShow",
 ];
+const BILIBILI_FOLLOWER_COUNT_KEYS: &[&str] = &[
+    "follower",
+    "fans_count",
+    "fansCount",
+    "fans",
+    "followers",
+    "followers_count",
+    "followersCount",
+];
+const LIKE_COUNT_KEYS: &[&str] = &[
+    "liked_count",
+    "likedCount",
+    "like_count",
+    "likeCount",
+    "likes",
+    "liked",
+    "faved_count",
+    "favedCount",
+    "faved_num",
+    "favedNum",
+    "liked_num",
+    "likedNum",
+    "like_num",
+    "likeNum",
+    "like_collect_count",
+    "likeCollectCount",
+    "liked_collect_count",
+    "likedCollectCount",
+    "like_collect_num",
+    "likeCollectNum",
+    "liked_collect_num",
+    "likedCollectNum",
+    "like_collect_number",
+    "likeCollectNumber",
+    "liked_collect_number",
+    "likedCollectNumber",
+    "like_and_collect",
+    "likeAndCollect",
+    "like_and_collect_count",
+    "likeAndCollectCount",
+    "liked_and_collected",
+    "likedAndCollected",
+    "liked_and_collected_count",
+    "likedAndCollectedCount",
+    "like_count_show",
+    "likeCountShow",
+    "liked_count_show",
+    "likedCountShow",
+    "liked_num_show",
+    "likedNumShow",
+    "total_liked",
+    "totalLiked",
+    "total_like",
+    "totalLike",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,8 +143,7 @@ struct PlatformInfo {
     supports_builtin_oauth: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 struct RelaySettings {
     enabled: bool,
     server_url: String,
@@ -134,8 +155,6 @@ struct RelaySettings {
 struct PlatformAuthSettings {
     platform_id: String,
     mode: AuthMode,
-    relay_path: String,
-    relay_method: HttpMethod,
     auth_url: String,
     token_url: String,
     profile_url: String,
@@ -147,22 +166,28 @@ struct PlatformAuthSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthSettings {
-    relay: RelaySettings,
     platforms: Vec<PlatformAuthSettings>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum AuthMode {
-    Relay,
+    Creator,
     OAuth,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-enum HttpMethod {
-    GET,
-    POST,
+impl<'de> Deserialize<'de> for AuthMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "creator" | "Creator" | "relay" | "Relay" => Ok(Self::Creator),
+            "oAuth" | "oauth" | "OAuth" | "oauth2" | "OAuth2" => Ok(Self::OAuth),
+            other => Err(serde::de::Error::unknown_variant(other, &["creator", "oAuth"])),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +210,9 @@ struct ChannelAccount {
     nickname: String,
     avatar: String,
     followers: Option<u64>,
+    likes: Option<u64>,
     status: AccountStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     relay_account_ref: Option<String>,
     token: Option<OAuthToken>,
     created_at: DateTime<Utc>,
@@ -222,21 +249,17 @@ struct PendingAuth {
     user_id: String,
     platform_id: String,
     callback_url: String,
+    plugin_window_label: Option<String>,
+    plugin_login_target: Option<String>,
     relay_platform_id: Option<String>,
     relay_session_id: Option<String>,
     relay_window_label: Option<String>,
-    douyin_cookie_account: Option<ChannelAccount>,
-    douyin_cookie_window_label: Option<String>,
-    douyin_cookie_window_opened_at: Option<DateTime<Utc>>,
-    plugin_window_label: Option<String>,
-    plugin_login_target: Option<String>,
     created_at: DateTime<Utc>,
 }
 
 struct RuntimeState {
     store: Mutex<StoreFile>,
     pending_auth: Mutex<HashMap<String, PendingAuth>>,
-    pending_auth_cookies: Mutex<HashMap<String, String>>,
     callback_port: Mutex<Option<u16>>,
     callback_starting: AtomicBool,
 }
@@ -287,6 +310,15 @@ struct AuthTaskStatus {
 }
 
 #[derive(Debug)]
+struct CreatorLoginSession {
+    url: String,
+    session_id: String,
+    expires_at: Option<String>,
+    instructions: Option<String>,
+    auth_type: String,
+}
+
+#[derive(Debug)]
 struct AitoearnAuthSession {
     url: String,
     session_id: String,
@@ -295,23 +327,22 @@ struct AitoearnAuthSession {
     auth_type: String,
 }
 
-struct AuthWindowProfile {
-    width: f64,
-    height: f64,
-    min_width: f64,
-    min_height: f64,
-    user_agent: &'static str,
-}
-
 #[derive(Debug, Clone)]
 struct PluginAccountInfo {
-    relay_platform_id: String,
     uid: String,
     account: String,
     nickname: String,
     avatar: String,
     fans_count: Option<u64>,
+    like_count: Option<u64>,
     login_cookie: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CreatorSessionStatus {
+    login_cookie: Option<String>,
+    webview_session_id: Option<String>,
+    profile: Option<PluginAccountInfo>,
 }
 
 #[derive(Debug)]
@@ -332,7 +363,6 @@ pub fn run() {
             app.manage(RuntimeState {
                 store: Mutex::new(store),
                 pending_auth: Mutex::new(HashMap::new()),
-                pending_auth_cookies: Mutex::new(HashMap::new()),
                 callback_port: Mutex::new(None),
                 callback_starting: AtomicBool::new(false),
             });
@@ -345,6 +375,7 @@ pub fn run() {
             start_channel_login,
             get_auth_task_status,
             refresh_channel_account,
+            mark_channel_account_unavailable,
             open_account_homepage,
             delete_channel_account
         ])
@@ -359,8 +390,7 @@ async fn get_bootstrap(
 ) -> Result<Bootstrap, String> {
     let user_id = normalize_user_id(&user_id)?;
     let store = state.store.lock().map_err(lock_error)?;
-    let mut settings = store.settings.clone();
-    settings.relay.api_key.clear();
+    let settings = store.settings.clone();
     let callback_base_url = state
         .callback_port
         .lock()
@@ -405,6 +435,7 @@ async fn start_channel_login(
 ) -> Result<StartLoginResponse, String> {
     let user_id = normalize_user_id(&request.user_id)?;
     let task_id = Uuid::new_v4().to_string();
+    let normalized_platform_id = normalize_platform_id(&request.platform_id);
     let settings = {
         let store = state.store.lock().map_err(lock_error)?;
         store.settings.clone()
@@ -412,18 +443,70 @@ async fn start_channel_login(
     let platform_settings = settings
         .platforms
         .iter()
-        .find(|item| item.platform_id == request.platform_id)
+        .find(|item| normalize_platform_id(&item.platform_id) == normalized_platform_id)
         .cloned()
         .ok_or_else(|| "未找到平台授权参数".to_string())?;
+
+    if normalized_platform_id == "kuaishou" {
+        let relay = aitoearn_relay_settings(&app);
+        let relay_platform_id = aitoearn_platform_id(&normalized_platform_id)
+            .ok_or_else(|| "当前平台不在 AiToEarn 支持列表中".to_string())?;
+        let session = create_aitoearn_auth_session(&relay, relay_platform_id).await?;
+        let callback_url = format!(
+            "aitoearn://channel-auth/relay-callback?platform={}&taskId={}",
+            encode_query(&normalized_platform_id),
+            encode_query(&task_id)
+        );
+        let mut relay_window_label = None;
+        let mut auth_type = session.auth_type.clone();
+        if should_open_relay_auth_in_app(&normalized_platform_id, &session.auth_type, &session.url) {
+            relay_window_label = Some(open_relay_auth_window(
+                &app,
+                &normalized_platform_id,
+                &task_id,
+                &session.url,
+            )?);
+            auth_type = "relay".to_string();
+        }
+
+        {
+            let mut pending = state.pending_auth.lock().map_err(lock_error)?;
+            pending.insert(
+                task_id.clone(),
+                PendingAuth {
+                    user_id,
+                    platform_id: normalized_platform_id.clone(),
+                    callback_url: callback_url.clone(),
+                    plugin_window_label: None,
+                    plugin_login_target: None,
+                    relay_platform_id: Some(relay_platform_id.to_string()),
+                    relay_session_id: Some(session.session_id.clone()),
+                    relay_window_label: relay_window_label.clone(),
+                    created_at: Utc::now(),
+                },
+            );
+        }
+
+        return Ok(StartLoginResponse {
+            task_id,
+            url: session.url,
+            callback_url,
+            mode: AuthMode::Creator,
+            auth_type,
+            session_id: Some(session.session_id),
+            expires_at: session.expires_at,
+            instructions: session.instructions,
+        });
+    }
 
     let mode = platform_settings.mode.clone();
     let callback_base = match mode {
         AuthMode::OAuth => ensure_callback_server(app.clone(), &state).await?,
-        AuthMode::Relay => "aitoearn://channel-auth".to_string(),
+        AuthMode::Creator => "creator://channel-auth".to_string(),
     };
     let callback_path = match mode {
-        AuthMode::Relay => "relay-callback",
         AuthMode::OAuth => "oauth-callback",
+        AuthMode::Creator => "creator-callback",
     };
     let callback_url = format!(
         "{callback_base}/{callback_path}?platform={}&taskId={}",
@@ -431,55 +514,29 @@ async fn start_channel_login(
         encode_query(&task_id)
     );
 
-    let mut relay_platform_id = None;
-    let mut relay_session_id = None;
-    let mut relay_window_label = None;
     let mut plugin_window_label = None;
     let mut plugin_login_target = None;
     let mut expires_at = None;
     let mut instructions = None;
     let mut auth_type = "oauth".to_string();
-    let mut opened_in_app = false;
 
     let auth_url = match mode {
-        AuthMode::Relay => {
-            relay_platform_id = aitoearn_platform_id(&platform_settings.platform_id)
-                .map(ToString::to_string);
-            if is_plugin_auth_platform(&platform_settings.platform_id) {
-                let target = normalize_plugin_login_target(
-                    &platform_settings.platform_id,
-                    request.login_target.as_deref(),
-                );
-                let session =
-                    open_plugin_login_window(&app, &platform_settings.platform_id, &task_id, target)?;
-                plugin_login_target = target.map(ToString::to_string);
-                plugin_window_label = Some(session.session_id.clone());
-                relay_session_id = None;
-                expires_at = session.expires_at.clone();
-                instructions = session.instructions.clone();
-                auth_type = session.auth_type.clone();
-                session.url
-            } else {
-                let session = create_aitoearn_auth_session(&settings.relay, &platform_settings).await?;
-                if should_open_relay_auth_in_app(
-                    &platform_settings.platform_id,
-                    &session.auth_type,
-                    &session.url,
-                ) {
-                    relay_window_label = Some(open_relay_auth_window(
-                        &app,
-                        &platform_settings.platform_id,
-                        &task_id,
-                        &session.url,
-                    )?);
-                    opened_in_app = true;
-                }
-                relay_session_id = Some(session.session_id.clone());
-                expires_at = session.expires_at.clone();
-                instructions = session.instructions.clone();
-                auth_type = session.auth_type.clone();
-                session.url
+        AuthMode::Creator => {
+            if !is_plugin_auth_platform(&platform_settings.platform_id) {
+                return Err("当前平台暂不支持创作中心登录".to_string());
             }
+            let target = normalize_plugin_login_target(
+                &platform_settings.platform_id,
+                request.login_target.as_deref(),
+            );
+            let session =
+                open_plugin_login_window(&app, &platform_settings.platform_id, &task_id, target)?;
+            plugin_login_target = target.map(ToString::to_string);
+            plugin_window_label = Some(session.session_id.clone());
+            expires_at = session.expires_at.clone();
+            instructions = session.instructions.clone();
+            auth_type = session.auth_type.clone();
+            session.url
         }
         AuthMode::OAuth => create_direct_oauth_url(&platform_settings, &callback_url, &task_id)?,
     };
@@ -492,20 +549,17 @@ async fn start_channel_login(
                 user_id,
                 platform_id: request.platform_id.clone(),
                 callback_url: callback_url.clone(),
-                relay_platform_id: relay_platform_id.clone(),
-                relay_session_id: relay_session_id.clone(),
-                relay_window_label: relay_window_label.clone(),
-                douyin_cookie_account: None,
-                douyin_cookie_window_label: None,
-                douyin_cookie_window_opened_at: None,
                 plugin_window_label: plugin_window_label.clone(),
                 plugin_login_target: plugin_login_target.clone(),
+                relay_platform_id: None,
+                relay_session_id: None,
+                relay_window_label: None,
                 created_at: Utc::now(),
             },
         );
     }
 
-    if auth_type == "oauth" && !auth_url.starts_with("data:image") && !opened_in_app {
+    if auth_type == "oauth" && !auth_url.starts_with("data:image") {
         open_external_url(&auth_url)?;
     }
 
@@ -515,7 +569,7 @@ async fn start_channel_login(
         callback_url,
         mode,
         auth_type,
-        session_id: relay_session_id,
+        session_id: plugin_window_label,
         expires_at,
         instructions,
     })
@@ -538,94 +592,7 @@ async fn get_auth_task_status(
         .cloned();
 
     if let Some(task) = pending_task.clone() {
-        if normalize_platform_id(&task.platform_id) == "douyin" {
-            if let Some(account) = task.douyin_cookie_account.clone() {
-                let configured_window_label = task.douyin_cookie_window_label.clone();
-                let existing_window_label = configured_window_label
-                    .clone()
-                    .filter(|label| app.get_webview_window(label).is_some());
-
-                if configured_window_label.is_some() && existing_window_label.is_none() {
-                    state
-                        .pending_auth
-                        .lock()
-                        .map_err(lock_error)?
-                        .remove(&task_id);
-                    let _ = take_pending_auth_cookie(&app, &task_id);
-                    return Ok(AuthTaskStatus {
-                        task_id,
-                        status: "failed".to_string(),
-                        account: None,
-                        message: Some("抖音网页登录窗口已关闭，授权流程已中断。".to_string()),
-                    });
-                }
-
-                let cookie_window_ready = task
-                    .douyin_cookie_window_opened_at
-                    .map(|opened_at| Utc::now().signed_duration_since(opened_at) >= Duration::seconds(8))
-                    .unwrap_or(true);
-                let login_cookie = if cookie_window_ready {
-                    existing_window_label
-                        .as_deref()
-                        .and_then(|label| {
-                            capture_auth_window_login_cookie(&app, Some(label), DOUYIN_COOKIE_URLS)
-                        })
-                        .or_else(|| take_pending_auth_cookie(&app, &task_id).ok().flatten())
-                } else {
-                    None
-                };
-
-                if let Some(login_cookie) = login_cookie.as_deref() {
-                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
-                    upsert_account_secret(&app, &account.id, login_cookie)?;
-                    upsert_account_webview_session(&app, &account.id, &task_id)?;
-                    state
-                        .pending_auth
-                        .lock()
-                        .map_err(lock_error)?
-                        .remove(&task_id);
-                    close_auth_window_by_label(&app, existing_window_label.as_deref());
-                    return Ok(AuthTaskStatus {
-                        task_id,
-                        status: "success".to_string(),
-                        account: Some(account),
-                        message: None,
-                    });
-                }
-
-                let _window_label = match existing_window_label {
-                    Some(label) => label,
-                    None => {
-                        eprintln!(
-                            "[douyin-auth] reopening cookie binding window task={} account={}",
-                            task_id, account.id
-                        );
-                        let label = open_douyin_cookie_binding_window(&app, &task_id, &account, None)?;
-                        let mut pending = state.pending_auth.lock().map_err(lock_error)?;
-                        if let Some(existing) = pending.get_mut(&task_id) {
-                            existing.douyin_cookie_window_label = Some(label.clone());
-                            existing.douyin_cookie_window_opened_at = Some(Utc::now());
-                        }
-                        label
-                    }
-                };
-
-                return Ok(AuthTaskStatus {
-                    task_id,
-                    status: "pending".to_string(),
-                    account: None,
-                    message: Some("OAuth 授权已完成，请在打开的抖音创作者中心窗口中完成网页登录，用于保存免登录状态。".to_string()),
-                });
-            }
-        }
-
         if let Some(window_label) = task.plugin_window_label.clone() {
-            let settings = state.store.lock().map_err(lock_error)?.settings.clone();
-            let relay_platform_id = task
-                .relay_platform_id
-                .clone()
-                .or_else(|| aitoearn_platform_id(&task.platform_id).map(ToString::to_string))
-                .ok_or_else(|| "当前平台不在 AiToEarn 支持列表中".to_string())?;
             match collect_plugin_account_info(
                 &app,
                 &task.platform_id,
@@ -638,6 +605,25 @@ async fn get_auth_task_status(
                     if let Some(existing) =
                         existing_plugin_account_for_profile(&app, &task.user_id, &task.platform_id, &profile)?
                     {
+                        if !matches!(existing.status, AccountStatus::Active) {
+                            let account =
+                                update_plugin_account_profile(&app, &task.user_id, &existing.id, &profile)?;
+                            let _ = upsert_account_webview_session(&app, &account.id, &task_id);
+                            let _ = app
+                                .get_webview_window(&window_label)
+                                .map(|window| window.close());
+                            state
+                                .pending_auth
+                                .lock()
+                                .map_err(lock_error)?
+                                .remove(&task_id);
+                            return Ok(AuthTaskStatus {
+                                task_id,
+                                status: "success".to_string(),
+                                account: Some(account),
+                                message: None,
+                            });
+                        }
                         return Ok(AuthTaskStatus {
                             task_id,
                             status: "pending".to_string(),
@@ -649,39 +635,10 @@ async fn get_auth_task_status(
                         });
                     }
 
-                    let account = match sync_plugin_account_to_aitoearn(
-                        &app,
-                        &task.user_id,
-                        &settings.relay,
-                        &relay_platform_id,
-                        profile,
-                    )
-                    .await
-                    {
-                        Ok(account) => account,
-                        Err(error) => {
-                            let _ = app
-                                .get_webview_window(&window_label)
-                                .map(|window| window.close());
-                            state
-                                .pending_auth
-                                .lock()
-                                .map_err(lock_error)?
-                                .remove(&task_id);
-                            return Ok(AuthTaskStatus {
-                                task_id,
-                                status: "failed".to_string(),
-                                account: None,
-                                message: Some(plugin_error_message(&error)),
-                            });
-                        }
-                    };
-                    if matches!(
-                        normalize_platform_id(&task.platform_id).as_str(),
-                        "xiaohongshu" | "wechat-channels"
-                    ) {
-                        let _ = upsert_account_webview_session(&app, &account.id, &task_id);
-                    }
+                    let account = plugin_info_to_channel_account(&task.platform_id, &profile);
+                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
+                    upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
+                    let _ = upsert_account_webview_session(&app, &account.id, &task_id);
                     let _ = app
                         .get_webview_window(&window_label)
                         .map(|window| window.close());
@@ -723,126 +680,46 @@ async fn get_auth_task_status(
                 }
             }
         }
+    }
 
+    if let Some(task) = pending_task.clone() {
         if let (Some(relay_platform_id), Some(session_id)) =
             (task.relay_platform_id.clone(), task.relay_session_id.clone())
         {
-            let settings = state.store.lock().map_err(lock_error)?.settings.clone();
-            let status = fetch_aitoearn_auth_status(&settings.relay, &relay_platform_id, &session_id)
+            let relay = aitoearn_relay_settings(&app);
+            let status = fetch_aitoearn_auth_status(&relay, &relay_platform_id, &session_id)
                 .await?;
             let remote_status = first_string(&status, &["status"]).unwrap_or_default();
-            if remote_status == "completed" || remote_status == "success" {
-                let settings = state.store.lock().map_err(lock_error)?.settings.clone();
-                let synced = fetch_aitoearn_accounts(&settings.relay).await?;
+            if matches!(remote_status.as_str(), "completed" | "success") {
+                let synced = fetch_aitoearn_accounts(&relay).await?;
                 let account = find_synced_auth_account(&synced, &task.platform_id, &status)
                     .or_else(|| {
                         synced
                             .iter()
                             .find(|item| {
-                                item.platform_id == task.platform_id && item.created_at >= task.created_at
+                                normalize_platform_id(&item.platform_id) == normalize_platform_id(&task.platform_id)
+                                    && item.created_at >= task.created_at
                             })
                             .cloned()
                     })
                     .or_else(|| {
                         synced
                             .iter()
-                            .filter(|item| item.platform_id == task.platform_id)
+                            .filter(|item| normalize_platform_id(&item.platform_id) == normalize_platform_id(&task.platform_id))
                             .max_by_key(|item| item.created_at)
                             .cloned()
-                    });
-                if normalize_platform_id(&task.platform_id) == "douyin" {
-                    let account = account
-                        .clone()
-                        .ok_or_else(|| "抖音授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
-                    let _ = take_pending_auth_cookie(&app, &task_id);
-                    close_auth_window_by_label(&app, task.relay_window_label.as_deref());
-                    eprintln!(
-                        "[douyin-auth] oauth completed, opening cookie binding window task={} account={}",
-                        task_id, account.id
-                    );
-                    let cookie_window_label =
-                        open_douyin_cookie_binding_window(&app, &task_id, &account, None)?;
-                    {
-                        let mut pending = state.pending_auth.lock().map_err(lock_error)?;
-                        if let Some(existing) = pending.get_mut(&task_id) {
-                            existing.relay_session_id = None;
-                            existing.relay_window_label = None;
-                            existing.douyin_cookie_account = Some(account);
-                            existing.douyin_cookie_window_label = Some(cookie_window_label);
-                            existing.douyin_cookie_window_opened_at = Some(Utc::now());
-                        }
-                    }
-                    return Ok(AuthTaskStatus {
-                        task_id,
-                        status: "pending".to_string(),
-                        account: None,
-                        message: Some("抖音账号授权已完成，请在打开的抖音创作者中心窗口中完成网页登录，用于保存免登录状态。".to_string()),
-                    });
+                    })
+                    .ok_or_else(|| "快手授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
+                let account = upsert_account_for_user(&app, &task.user_id, account)?;
+                let login_cookie = capture_auth_window_cookies_any(
+                    &app,
+                    task.relay_window_label.as_deref(),
+                    channel_cookie_urls("kuaishou"),
+                );
+                if let Some(login_cookie) = login_cookie.as_deref() {
+                    upsert_account_secret(&app, &account.id, login_cookie)?;
                 }
-                if normalize_platform_id(&task.platform_id) == "bilibili" {
-                    let account = account
-                        .clone()
-                        .ok_or_else(|| "B 站授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
-                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
-                    let login_cookie = capture_auth_window_cookies_any(
-                        &app,
-                        task.relay_window_label.as_deref(),
-                        BILIBILI_COOKIE_URLS,
-                    );
-                    if let Some(login_cookie) = login_cookie.as_deref() {
-                        upsert_account_secret(&app, &account.id, login_cookie)?;
-                    }
-                    upsert_account_webview_session(&app, &account.id, &task_id)?;
-                    if account.created_at < task.created_at {
-                        state
-                            .pending_auth
-                            .lock()
-                            .map_err(lock_error)?
-                            .remove(&task_id);
-                        close_auth_window_by_label(&app, task.relay_window_label.as_deref());
-                        return Ok(AuthTaskStatus {
-                            task_id,
-                            status: "failed".to_string(),
-                            account: None,
-                            message: Some(format!(
-                                "当前窗口登录的是已添加的 B 站账号「{}」。请先退出该账号，再从 B 站列表加号重新添加新账号。",
-                                account.nickname
-                            )),
-                        });
-                    }
-                }
-                if normalize_platform_id(&task.platform_id) == "kuaishou" {
-                    let account = account
-                        .clone()
-                        .ok_or_else(|| "快手授权已完成，但没有同步到账号信息，请重新授权。".to_string())?;
-                    let account = upsert_account_for_user(&app, &task.user_id, account)?;
-                    let login_cookie = capture_auth_window_cookies_any(
-                        &app,
-                        task.relay_window_label.as_deref(),
-                        KUAISHOU_COOKIE_URLS,
-                    );
-                    if let Some(login_cookie) = login_cookie.as_deref() {
-                        upsert_account_secret(&app, &account.id, login_cookie)?;
-                    }
-                    upsert_account_webview_session(&app, &account.id, &task_id)?;
-                    if account.created_at < task.created_at {
-                        state
-                            .pending_auth
-                            .lock()
-                            .map_err(lock_error)?
-                            .remove(&task_id);
-                        close_auth_window_by_label(&app, task.relay_window_label.as_deref());
-                        return Ok(AuthTaskStatus {
-                            task_id,
-                            status: "failed".to_string(),
-                            account: None,
-                            message: Some(format!(
-                                "当前窗口登录的是已添加的快手账号「{}」。请先退出该账号，再从快手列表加号重新添加新账号。",
-                                account.nickname
-                            )),
-                        });
-                    }
-                }
+                let _ = upsert_account_webview_session(&app, &account.id, &task_id);
                 state
                     .pending_auth
                     .lock()
@@ -852,22 +729,19 @@ async fn get_auth_task_status(
                 return Ok(AuthTaskStatus {
                     task_id,
                     status: "success".to_string(),
-                    account: account
-                        .map(|item| upsert_account_for_user(&app, &task.user_id, item))
-                        .transpose()?,
+                    account: Some(account),
                     message: None,
                 });
             }
 
-            if remote_status == "failed" || remote_status == "expired" || remote_status == "timeout" {
+            if matches!(remote_status.as_str(), "failed" | "expired" | "timeout") {
                 let message = first_string(&status, &["message", "reason"])
-                    .unwrap_or_else(|| "平台授权没有完成，请重新尝试。".to_string());
+                    .unwrap_or_else(|| "快手授权没有完成，请重新尝试。".to_string());
                 state
                     .pending_auth
                     .lock()
                     .map_err(lock_error)?
                     .remove(&task_id);
-                let _ = take_pending_auth_cookie(&app, &task_id);
                 close_auth_window_by_label(&app, task.relay_window_label.as_deref());
                 return Ok(AuthTaskStatus {
                     task_id,
@@ -881,7 +755,8 @@ async fn get_auth_task_status(
                 task_id,
                 status: "pending".to_string(),
                 account: None,
-                message: None,
+                message: first_string(&status, &["message", "reason"])
+                    .or_else(|| Some("请在打开的快手授权窗口中完成登录。".to_string())),
             });
         }
     }
@@ -891,8 +766,7 @@ async fn get_auth_task_status(
     let account = accounts
         .iter()
         .find(|item| {
-            item.relay_account_ref.as_deref() == Some(task_id.as_str())
-                || item.id == task_id
+            item.id == task_id
                 || pending_task
                     .as_ref()
                     .map(|task| item.platform_id == task.platform_id && item.created_at >= task.created_at)
@@ -935,60 +809,50 @@ async fn refresh_channel_account(
     let account = existing
         .as_ref()
         .ok_or_else(|| "账号不存在".to_string())?;
-    let (settings, secret_cookie) = {
+    if normalize_platform_id(&account.platform_id) == "kuaishou" {
+        let relay = aitoearn_relay_settings(&app);
+        let refreshed = refresh_aitoearn_channel_account(&relay, account).await?;
+        return upsert_account_for_user(&app, &user_id, refreshed);
+    }
+    let (secret_cookie, secret_webview_session_id) = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let migrated = migrate_account_secret_for_account(&mut store, account);
         let value = (
-            store.settings.clone(),
             account_secret_for_account(&store, account).and_then(|secret| secret.login_cookie),
+            account_secret_for_account(&store, account).and_then(|secret| secret.webview_session_id),
         );
         if migrated {
             persist_store(&app, &store)?;
         }
         value
     };
-    let xhs_result = if account.platform_id == "xiaohongshu" {
-        Some(refresh_xhs_account_profile(&app, account, secret_cookie.as_deref()).await)
-    } else {
-        None
+    let creator_status = match check_creator_session(
+        &app,
+        account,
+        secret_cookie.as_deref(),
+        secret_webview_session_id.as_deref(),
+    )
+    .await
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = mark_account_expired(&app, &account.id);
+            return Err(error);
+        }
     };
-    let analytics_result = if xhs_result.is_none() {
-        refresh_aitoearn_account_analytics(&settings.relay, account).await
-    } else {
-        Ok(None)
-    };
-    if let Some(Err(error)) = xhs_result.as_ref() {
-        return Err(error.clone());
-    }
-    if analytics_result.is_err() {
-        return Err(format!(
-            "刷新失败：{}",
-            analytics_result
-                .as_ref()
-                .err()
-                .cloned()
-                .unwrap_or_else(|| "平台账号数据暂时不可用".to_string())
-        ));
-    }
-
-    let analytics_followers = analytics_result.ok().flatten();
-    let xhs_profile = xhs_result.and_then(Result::ok).flatten();
-    if let Some(profile) = xhs_profile.as_ref() {
-        let _ = sync_plugin_account_to_aitoearn(
-            &app,
-            &user_id,
-            &settings.relay,
-            &profile.relay_platform_id,
-            profile.clone(),
-        )
-        .await;
-    }
 
     let mut store = state.store.lock().map_err(lock_error)?;
-    if let Some(profile) = xhs_profile.as_ref() {
-        if !profile.login_cookie.trim().is_empty() {
-            let secret = store.account_secrets.entry(account_id.clone()).or_default();
-            secret.login_cookie = Some(profile.login_cookie.clone());
+    if creator_status.login_cookie.is_some() || creator_status.webview_session_id.is_some() {
+        let secret = store.account_secrets.entry(account_id.clone()).or_default();
+        if let Some(login_cookie) = creator_status.login_cookie.as_ref() {
+            if !login_cookie.trim().is_empty() {
+                secret.login_cookie = Some(login_cookie.clone());
+            }
+        }
+        if let Some(webview_session_id) = creator_status.webview_session_id.as_ref() {
+            if !webview_session_id.trim().is_empty() {
+                secret.webview_session_id = Some(webview_session_id.clone());
+            }
         }
     }
     let account = store
@@ -996,7 +860,7 @@ async fn refresh_channel_account(
         .iter_mut()
         .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
         .ok_or_else(|| "账号不存在".to_string())?;
-    if let Some(profile) = xhs_profile.as_ref() {
+    if let Some(profile) = creator_status.profile.as_ref() {
         if !profile.nickname.trim().is_empty() {
             account.nickname = profile.nickname.clone();
         }
@@ -1006,17 +870,14 @@ async fn refresh_channel_account(
         if let Some(fans_count) = profile.fans_count {
             account.followers = Some(fans_count);
         }
-        if account.uid.trim().is_empty() {
+        if let Some(like_count) = profile.like_count {
+            account.likes = Some(like_count);
+        }
+        if account.uid.trim().is_empty() || normalize_platform_id(&account.platform_id) == "douyin" {
             account.uid = profile.uid.clone();
         }
     }
-    if let Some(followers) = analytics_followers {
-        account.followers = Some(followers);
-    }
-    account.status = match account.token.as_ref().and_then(|token| token.expires_at) {
-        Some(expires_at) if expires_at <= Utc::now() => AccountStatus::Expired,
-        _ => AccountStatus::Active,
-    };
+    account.status = AccountStatus::Active;
     account.last_sync_at = Some(Utc::now());
     account.updated_at = Utc::now();
     let cloned = account.clone();
@@ -1025,14 +886,33 @@ async fn refresh_channel_account(
 }
 
 #[tauri::command]
+async fn mark_channel_account_unavailable(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    account_id: String,
+    user_id: String,
+) -> Result<ChannelAccount, String> {
+    let user_id = normalize_user_id(&user_id)?;
+    {
+        let store = state.store.lock().map_err(lock_error)?;
+        store
+            .accounts
+            .iter()
+            .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
+            .ok_or_else(|| "账号不存在".to_string())?;
+    }
+    mark_account_expired(&app, &account_id)
+}
+
+#[tauri::command]
 async fn open_account_homepage(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     account_id: String,
     user_id: String,
-) -> Result<(), String> {
+) -> Result<ChannelAccount, String> {
     let user_id = normalize_user_id(&user_id)?;
-    let (account, saved_login_cookie, saved_webview_session_id) = {
+    let (mut account, saved_login_cookie, saved_webview_session_id) = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let account = store
             .accounts
@@ -1051,69 +931,143 @@ async fn open_account_homepage(
     }
     ?;
 
-    if normalize_platform_id(&account.platform_id) == "douyin" {
-        return open_douyin_creator_webview(
-            &app,
-            &account,
-            saved_login_cookie.as_deref(),
-            saved_webview_session_id.as_deref(),
-        );
-    }
     if normalize_platform_id(&account.platform_id) == "xiaohongshu" {
-        let mut login_cookie = saved_login_cookie;
-        let mut webview_session_id = saved_webview_session_id;
-        if webview_session_id.is_none() {
-            if let Some((session_id, profile)) = find_xhs_session_for_account(&app, &account).await? {
-                upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
-                upsert_account_webview_session(&app, &account.id, &session_id)?;
-                login_cookie = Some(profile.login_cookie);
-                webview_session_id = Some(session_id);
-            }
-        }
-        return open_xhs_creator_webview(
-            &app,
-            &account,
-            login_cookie.as_deref(),
-            webview_session_id.as_deref(),
-        );
-    }
-    if normalize_platform_id(&account.platform_id) == "wechat-channels" {
-        let mut login_cookie = saved_login_cookie;
-        let mut webview_session_id = saved_webview_session_id;
-        if webview_session_id.is_none() {
-            if let Some((session_id, profile)) = find_wx_channels_session_for_account(&app, &account).await? {
-                upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
-                upsert_account_webview_session(&app, &account.id, &session_id)?;
-                login_cookie = Some(profile.login_cookie);
-                webview_session_id = Some(session_id);
-            }
-        }
-        return open_wx_channels_webview(
-            &app,
-            &account,
-            login_cookie.as_deref(),
-            webview_session_id.as_deref(),
-        );
-    }
-    if normalize_platform_id(&account.platform_id) == "bilibili" {
-        return open_bilibili_creator_webview(
+        open_xhs_creator_webview(
             &app,
             &account,
             saved_login_cookie.as_deref(),
             saved_webview_session_id.as_deref(),
+        )?;
+        spawn_creator_session_check(
+            app.clone(),
+            user_id,
+            account.clone(),
+            saved_login_cookie,
+            saved_webview_session_id,
         );
-    }
-    if normalize_platform_id(&account.platform_id) == "kuaishou" {
-        return open_kuaishou_creator_webview(
-            &app,
-            &account,
-            saved_login_cookie.as_deref(),
-            saved_webview_session_id.as_deref(),
-        );
+        return Ok(account);
     }
 
-    let url = account_homepage_url(&account)?;
-    open_external_url(&url)
+    if normalize_platform_id(&account.platform_id) == "kuaishou" {
+        open_kuaishou_creator_webview(
+            &app,
+            &account,
+            saved_login_cookie.as_deref(),
+            saved_webview_session_id.as_deref(),
+        )?;
+        return Ok(account);
+    }
+
+    let creator_status = match check_creator_session(
+        &app,
+        &account,
+        saved_login_cookie.as_deref(),
+        saved_webview_session_id.as_deref(),
+    )
+    .await
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = mark_account_expired(&app, &account.id);
+            return Err(error);
+        }
+    };
+    if let Some(profile) = creator_status.profile.as_ref() {
+        account = update_plugin_account_profile(&app, &user_id, &account.id, profile)?;
+    }
+    let login_cookie = creator_status
+        .login_cookie
+        .as_deref()
+        .or(saved_login_cookie.as_deref());
+    let webview_session_id = creator_status
+        .webview_session_id
+        .as_deref()
+        .or(saved_webview_session_id.as_deref());
+
+    match normalize_platform_id(&account.platform_id).as_str() {
+        "douyin" => {
+            open_douyin_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            Ok(account)
+        }
+        "xiaohongshu" => {
+            open_xhs_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            Ok(account)
+        }
+        "wechat-channels" => {
+            open_wx_channels_webview(&app, &account, login_cookie, webview_session_id)?;
+            Ok(account)
+        }
+        "bilibili" => {
+            open_bilibili_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            Ok(account)
+        }
+        "kuaishou" => {
+            open_kuaishou_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            Ok(account)
+        }
+        _ => {
+            let url = account_homepage_url(&account)?;
+            open_external_url(&url)?;
+            Ok(account)
+        }
+    }
+}
+
+fn spawn_creator_session_check(
+    app: AppHandle,
+    user_id: String,
+    account: ChannelAccount,
+    saved_login_cookie: Option<String>,
+    saved_webview_session_id: Option<String>,
+) {
+    tauri::async_runtime::spawn(async move {
+        match check_creator_session(
+            &app,
+            &account,
+            saved_login_cookie.as_deref(),
+            saved_webview_session_id.as_deref(),
+        )
+        .await
+        {
+            Ok(status) => {
+                if let Some(profile) = status.profile.as_ref() {
+                    if let Err(error) =
+                        update_plugin_account_profile(&app, &user_id, &account.id, profile)
+                    {
+                        eprintln!(
+                            "[creator-session:{}] profile update failed for {}: {error}",
+                            account.platform_id, account.id
+                        );
+                    }
+                }
+                if let Some(login_cookie) = status.login_cookie.as_ref() {
+                    if let Err(error) = upsert_account_secret(&app, &account.id, login_cookie) {
+                        eprintln!(
+                            "[creator-session:{}] cookie update failed for {}: {error}",
+                            account.platform_id, account.id
+                        );
+                    }
+                }
+                if let Some(webview_session_id) = status.webview_session_id.as_ref() {
+                    if let Err(error) =
+                        upsert_account_webview_session(&app, &account.id, webview_session_id)
+                    {
+                        eprintln!(
+                            "[creator-session:{}] session update failed for {}: {error}",
+                            account.platform_id, account.id
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "[creator-session:{}] background check failed for {}: {error}",
+                    account.platform_id, account.id
+                );
+                let _ = mark_account_expired(&app, &account.id);
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -1133,10 +1087,11 @@ async fn delete_channel_account(
             .cloned()
     };
     if let Some(account) = account.as_ref() {
-        let settings = state.store.lock().map_err(lock_error)?.settings.clone();
-        let _ = delete_aitoearn_account(&settings.relay, account).await;
+        if normalize_platform_id(&account.platform_id) == "kuaishou" {
+            let relay = aitoearn_relay_settings(&app);
+            let _ = delete_aitoearn_account(&relay, account).await;
+        }
     }
-
     let mut store = state.store.lock().map_err(lock_error)?;
     let original_len = store.accounts.len();
     store
@@ -1156,22 +1111,155 @@ async fn delete_channel_account(
     Ok(())
 }
 
-async fn create_aitoearn_auth_session(
-    relay: &RelaySettings,
-    platform_settings: &PlatformAuthSettings,
-) -> Result<AitoearnAuthSession, String> {
-    if !relay.enabled || relay.server_url.trim().is_empty() || relay.api_key.trim().is_empty() {
-        return Err("授权服务参数不可用，请检查内置配置".to_string());
+fn aitoearn_relay_settings(app: &AppHandle) -> RelaySettings {
+    let mut server_url = env::var("CHANNEL_NEST_RELAY_SERVER_URL")
+        .or_else(|_| env::var("MARKETING_MASTER_RELAY_SERVER_URL"))
+        .or_else(|_| env::var("AITOEARN_RELAY_SERVER_URL"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| RELAY_SERVER_URL.to_string());
+    let mut api_key = env::var("CHANNEL_NEST_RELAY_API_KEY")
+        .or_else(|_| env::var("MARKETING_MASTER_RELAY_API_KEY"))
+        .or_else(|_| env::var("AITOEARN_RELAY_API_KEY"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| option_env!("CHANNEL_NEST_RELAY_API_KEY").map(ToString::to_string))
+        .or_else(|| option_env!("MARKETING_MASTER_RELAY_API_KEY").map(ToString::to_string))
+        .or_else(|| option_env!("AITOEARN_RELAY_API_KEY").map(ToString::to_string))
+        .unwrap_or_default();
+
+    for path in relay_config_candidates(app) {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+            if let Some(value) = json_config_string(&value, &["serverUrl", "server_url", "baseUrl", "base_url"]) {
+                server_url = value;
+            }
+            if api_key.trim().is_empty() {
+                if let Some(value) = json_config_string(&value, &["apiKey", "api_key", "relayApiKey", "relay_api_key"]) {
+                    api_key = value;
+                }
+            }
+            continue;
+        }
+        if let Some(value) = env_config_string(
+            &text,
+            &[
+                "CHANNEL_NEST_RELAY_SERVER_URL",
+                "MARKETING_MASTER_RELAY_SERVER_URL",
+                "AITOEARN_RELAY_SERVER_URL",
+            ],
+        ) {
+            server_url = value;
+        }
+        if api_key.trim().is_empty() {
+            if let Some(value) = env_config_string(
+                &text,
+                &[
+                    "CHANNEL_NEST_RELAY_API_KEY",
+                    "MARKETING_MASTER_RELAY_API_KEY",
+                    "AITOEARN_RELAY_API_KEY",
+                    "RELAY_API_KEY",
+                ],
+            ) {
+                api_key = value;
+            }
+        }
     }
 
-    let relay_platform_id = aitoearn_platform_id(&platform_settings.platform_id)
-        .ok_or_else(|| "当前平台不在 AiToEarn 支持列表中".to_string())?;
+    RelaySettings {
+        enabled: !api_key.trim().is_empty(),
+        server_url,
+        api_key,
+    }
+}
+
+fn relay_config_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(current) = env::current_dir() {
+        let mut cursor = Some(current.as_path());
+        for _ in 0..4 {
+            if let Some(path) = cursor {
+                push_unique_path(&mut dirs, path.to_path_buf());
+                cursor = path.parent();
+            }
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_unique_path(&mut dirs, resource_dir);
+    }
+    if let Ok(app_config_dir) = app.path().app_config_dir() {
+        push_unique_path(&mut dirs, app_config_dir);
+    }
+
+    let mut files = Vec::new();
+    for dir in dirs {
+        for relative in [
+            ".secret/aitoearn-relay.json",
+            ".secrets/aitoearn-relay.json",
+            ".secret/local-build.env",
+            ".secrets/local-build.env",
+            "aitoearn-relay.json",
+        ] {
+            push_unique_path(&mut files, dir.join(relative));
+        }
+    }
+    files
+}
+
+fn push_unique_path(values: &mut Vec<PathBuf>, value: PathBuf) {
+    if !values.iter().any(|item| item == &value) {
+        values.push(value);
+    }
+}
+
+fn json_config_string(value: &Value, keys: &[&str]) -> Option<String> {
+    first_string(value, keys)
+        .map(|value| trim_config_value(&value))
+        .filter(|value| !value.is_empty())
+}
+
+fn env_config_string(text: &str, keys: &[&str]) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if keys.iter().any(|candidate| candidate == &key.trim()) {
+            let value = trim_config_value(value);
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn trim_config_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+async fn create_aitoearn_auth_session(
+    relay: &RelaySettings,
+    relay_platform_id: &str,
+) -> Result<AitoearnAuthSession, String> {
+    if !relay.enabled || relay.server_url.trim().is_empty() || relay.api_key.trim().is_empty() {
+        return Err("AiToEarn relay 参数不可用，请在 .secret/aitoearn-relay.json 或 .secrets/local-build.env 中配置 API Key。".to_string());
+    }
+
     let group_id = default_aitoearn_group_id(relay).await.unwrap_or(None);
     let mut params = Vec::new();
     if let Some(group_id) = group_id.as_deref() {
         params.push(("groupId", group_id));
     }
-
     let value = aitoearn_get(
         relay,
         &format!("v2/channels/accounts/auth/{relay_platform_id}"),
@@ -1182,9 +1270,9 @@ async fn create_aitoearn_auth_session(
 
     let data = relay_response_data(&value);
     let url = first_string(data, &["url", "uri"])
-        .ok_or_else(|| format!("授权响应缺少授权 URL: {value}"))?;
+        .ok_or_else(|| "授权响应缺少授权 URL".to_string())?;
     let session_id = first_string(data, &["sessionId", "session_id"])
-        .ok_or_else(|| format!("授权响应缺少 sessionId: {value}"))?;
+        .ok_or_else(|| "授权响应缺少 sessionId".to_string())?;
     let auth_type = if url.starts_with("data:image") {
         "qrcode"
     } else {
@@ -1193,7 +1281,8 @@ async fn create_aitoearn_auth_session(
     .to_string();
     let instructions = data
         .get("authInstructions")
-        .and_then(|value| first_string(value, &["zh-CN", "zh", "en-US", "en"]));
+        .and_then(|value| first_string(value, &["zh-CN", "zh", "en-US", "en"]))
+        .or_else(|| Some("请在打开的快手授权窗口中完成登录。".to_string()));
 
     Ok(AitoearnAuthSession {
         url,
@@ -1231,26 +1320,57 @@ async fn fetch_aitoearn_accounts(relay: &RelaySettings) -> Result<Vec<ChannelAcc
         .get("list")
         .and_then(Value::as_array)
         .or_else(|| data.as_array())
-        .ok_or_else(|| "账号列表响应格式无效".to_string())?;
+        .ok_or_else(|| "AiToEarn 账号列表响应格式无效".to_string())?;
 
     let mut accounts = Vec::new();
     for item in list {
         if let Some(account) = aitoearn_account_from_value(item) {
-            accounts.push(account);
+            if normalize_platform_id(&account.platform_id) == "kuaishou" {
+                accounts.push(account);
+            }
         }
     }
     Ok(accounts)
+}
+
+async fn refresh_aitoearn_channel_account(
+    relay: &RelaySettings,
+    account: &ChannelAccount,
+) -> Result<ChannelAccount, String> {
+    let accounts = fetch_aitoearn_accounts(relay).await?;
+    let mut refreshed = accounts
+        .into_iter()
+        .find(|item| {
+            same_relay_account(item, account)
+                || (!account.uid.trim().is_empty() && item.uid == account.uid)
+        })
+        .ok_or_else(|| "快手 relay 账号不存在或授权已失效，请重新登录。".to_string())?;
+
+    if let Ok(Some(followers)) = refresh_aitoearn_account_analytics(relay, account).await {
+        refreshed.followers = Some(followers);
+    }
+    refreshed.user_id = account.user_id.clone();
+    refreshed.created_at = account.created_at;
+    refreshed.updated_at = Utc::now();
+    refreshed.last_sync_at = Some(Utc::now());
+    Ok(refreshed)
+}
+
+fn same_relay_account(left: &ChannelAccount, right: &ChannelAccount) -> bool {
+    match (
+        left.relay_account_ref.as_deref(),
+        right.relay_account_ref.as_deref(),
+    ) {
+        (Some(left), Some(right)) if left == right => true,
+        _ => false,
+    }
 }
 
 async fn refresh_aitoearn_account_analytics(
     relay: &RelaySettings,
     account: &ChannelAccount,
 ) -> Result<Option<u64>, String> {
-    let Some(relay_account_id) = account
-        .relay_account_ref
-        .as_deref()
-        .or_else(|| account.id.strip_prefix(""))
-    else {
+    let Some(relay_account_id) = account.relay_account_ref.as_deref() else {
         return Ok(None);
     };
     let value = aitoearn_get(
@@ -1281,6 +1401,573 @@ async fn delete_aitoearn_account(
     .await?;
     ensure_aitoearn_success(&value)?;
     Ok(())
+}
+
+async fn default_aitoearn_group_id(relay: &RelaySettings) -> Result<Option<String>, String> {
+    let value = aitoearn_get(relay, "v2/channels/account-groups", &[]).await?;
+    ensure_aitoearn_success(&value)?;
+    let data = relay_response_data(&value);
+    let Some(groups) = data.as_array() else {
+        return Ok(None);
+    };
+    let default_group = groups
+        .iter()
+        .find(|item| item.get("isDefault").and_then(Value::as_bool) == Some(true))
+        .or_else(|| groups.first());
+    Ok(default_group.and_then(|item| first_string(item, &["id"])))
+}
+
+async fn aitoearn_get(
+    relay: &RelaySettings,
+    path: &str,
+    params: &[(&str, &str)],
+) -> Result<Value, String> {
+    let mut url = relay_url(relay, path)?;
+    for (key, value) in params {
+        url.query_pairs_mut().append_pair(key, value);
+    }
+    aitoearn_request(Client::new().get(url), relay).await
+}
+
+async fn aitoearn_delete(relay: &RelaySettings, path: &str) -> Result<Value, String> {
+    let url = relay_url(relay, path)?;
+    aitoearn_request(Client::new().delete(url), relay).await
+}
+
+async fn aitoearn_request(
+    request: reqwest::RequestBuilder,
+    relay: &RelaySettings,
+) -> Result<Value, String> {
+    let response = request
+        .header("x-api-key", relay.api_key.trim())
+        .header("Accept-Language", "zh-CN")
+        .timeout(std::time::Duration::from_secs(18))
+        .send()
+        .await
+        .map_err(|error| format!("请求 AiToEarn relay 失败: {error}"))?;
+    let status = response.status();
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("AiToEarn relay 返回不是 JSON: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("AiToEarn relay 返回 HTTP {status}: {}", relay_error_message(&value)));
+    }
+    Ok(value)
+}
+
+fn relay_url(relay: &RelaySettings, path: &str) -> Result<Url, String> {
+    let base = relay.server_url.trim().trim_end_matches('/');
+    let path = path.trim().trim_start_matches('/');
+    Url::parse(&format!("{base}/{path}")).map_err(|error| format!("AiToEarn relay 地址无效: {error}"))
+}
+
+fn ensure_aitoearn_success(value: &Value) -> Result<(), String> {
+    if let Some(code) = value.get("code").and_then(Value::as_i64) {
+        if code != 0 {
+            return Err(match code {
+                401 | 403 => "AiToEarn relay API Key 认证失败".to_string(),
+                _ => relay_error_message(value),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn relay_response_data(value: &Value) -> &Value {
+    value.get("data").unwrap_or(value)
+}
+
+fn aitoearn_account_from_value(value: &Value) -> Option<ChannelAccount> {
+    let remote_platform = first_string(value, &["type", "platform", "platformId", "platform_id"])?;
+    let platform_id = normalize_platform_id(&remote_platform);
+    let id = first_string(value, &["id", "accountId", "account_id"])
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let uid = first_string(value, &["uid", "platformUid", "platform_uid", "openId", "open_id"])
+        .unwrap_or_else(|| id.clone());
+    let nickname = first_string(value, &["nickname", "name", "displayName", "display_name"])
+        .unwrap_or_else(|| platform_name(&platform_id).to_string());
+    let avatar = first_profile_image(
+        value,
+        &[
+            "avatar",
+            "avatarUrl",
+            "avatar_url",
+            "headImg",
+            "headImgUrl",
+            "head_img",
+            "profileImageUrl",
+            "profile_image_url",
+            "image",
+            "imageUrl",
+            "image_url",
+        ],
+    )
+    .map(|value| normalize_platform_image_url(&platform_id, value))
+    .unwrap_or_default();
+    let status = relay_account_status(value);
+    let created_at = first_string(value, &["createdAt", "created_at"])
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let updated_at = first_string(value, &["updatedAt", "updated_at"])
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let last_sync_at = first_string(value, &["lastStatsTime", "lastSyncAt", "last_sync_at", "updatedAt", "updated_at"])
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .or(Some(updated_at));
+
+    Some(ChannelAccount {
+        id: id.clone(),
+        user_id: None,
+        platform_id,
+        uid,
+        nickname,
+        avatar,
+        followers: first_count(value, FOLLOWER_COUNT_KEYS),
+        likes: first_count(value, LIKE_COUNT_KEYS),
+        status,
+        relay_account_ref: Some(id),
+        token: None,
+        created_at,
+        updated_at,
+        last_sync_at,
+    })
+}
+
+fn relay_account_status(value: &Value) -> AccountStatus {
+    if let Some(status) = value.get("status").and_then(Value::as_i64) {
+        return match status {
+            1 => AccountStatus::Active,
+            0 => AccountStatus::Pending,
+            _ => AccountStatus::Expired,
+        };
+    }
+    let status = first_string(value, &["status", "state"])
+        .unwrap_or_else(|| "active".to_string())
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "active" | "enabled" | "success" | "completed" | "1" => AccountStatus::Active,
+        "pending" | "processing" | "0" => AccountStatus::Pending,
+        _ => AccountStatus::Expired,
+    }
+}
+
+fn find_synced_auth_account(
+    accounts: &[ChannelAccount],
+    platform_id: &str,
+    status: &Value,
+) -> Option<ChannelAccount> {
+    let mut ids = Vec::new();
+    if let Some(id) = first_string(status, &["accountId", "account_id", "id"]) {
+        ids.push(id);
+    }
+    if let Some(values) = status.get("accountIds").and_then(Value::as_array) {
+        ids.extend(values.iter().filter_map(Value::as_str).map(ToString::to_string));
+    }
+    if let Some(values) = status.get("accounts").and_then(Value::as_array) {
+        for item in values {
+            if let Some(id) = first_string(item, &["accountId", "account_id", "id"]) {
+                ids.push(id);
+            }
+        }
+    }
+    if ids.is_empty() {
+        return None;
+    }
+    accounts
+        .iter()
+        .filter(|item| normalize_platform_id(&item.platform_id) == normalize_platform_id(platform_id))
+        .find(|item| {
+            ids.iter().any(|id| {
+                item.id == *id || item.relay_account_ref.as_deref() == Some(id.as_str())
+            })
+        })
+        .cloned()
+}
+
+fn should_open_relay_auth_in_app(platform_id: &str, auth_type: &str, url: &str) -> bool {
+    normalize_platform_id(platform_id) == "kuaishou"
+        && auth_type == "oauth"
+        && !url.trim().is_empty()
+        && !url.starts_with("data:image")
+}
+
+fn relay_auth_window_label(platform_id: &str, task_id: &str) -> String {
+    format!(
+        "relay-auth-{}-{}",
+        normalize_platform_id(platform_id).replace('-', "_"),
+        task_suffix(task_id)
+    )
+}
+
+fn close_relay_auth_windows_for_platform(app: &AppHandle, platform_id: &str, keep_label: &str) {
+    let prefix = format!(
+        "relay-auth-{}-",
+        normalize_platform_id(platform_id).replace('-', "_")
+    );
+    for window in app.webview_windows().into_values() {
+        let label = window.label();
+        if label.starts_with(&prefix) && label != keep_label {
+            let _ = window.close();
+        }
+    }
+}
+
+fn close_auth_window_by_label(app: &AppHandle, label: Option<&str>) {
+    if let Some(label) = label {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
+fn kuaishou_qrcode_login_url(url: &Url) -> Option<Url> {
+    let is_login_page = url
+        .host_str()
+        .map(|host| host.eq_ignore_ascii_case("open.kuaishou.com"))
+        .unwrap_or(false)
+        && url.path() == "/web/oauth/login";
+    if !is_login_page {
+        return None;
+    }
+    let has_qrcode_flag = url
+        .query_pairs()
+        .any(|(key, value)| key == "needQrcode" && value == "1");
+    if has_qrcode_flag {
+        return None;
+    }
+
+    let mut login_url = url.clone();
+    let has_qr_type = login_url
+        .query_pairs()
+        .any(|(key, _)| key == "needQrType");
+    {
+        let mut pairs = login_url.query_pairs_mut();
+        pairs.append_pair("needQrcode", "1");
+        if !has_qr_type {
+            pairs.append_pair("needQrType", "identity-verify-auto");
+        }
+    }
+    Some(login_url)
+}
+
+fn kuaishou_pc_authorize_url(url: &Url) -> Option<Url> {
+    let is_authorize_page = url
+        .host_str()
+        .map(|host| host.eq_ignore_ascii_case("open.kuaishou.com"))
+        .unwrap_or(false)
+        && url.path() == "/oauth2/authorize";
+    if !is_authorize_page {
+        return None;
+    }
+    if url
+        .query_pairs()
+        .any(|(key, value)| key == "ua" && value.eq_ignore_ascii_case("pc"))
+    {
+        return None;
+    }
+    let mut next = url.clone();
+    next.query_pairs_mut().append_pair("ua", "pc");
+    Some(next)
+}
+
+fn open_relay_auth_window(
+    app: &AppHandle,
+    platform_id: &str,
+    task_id: &str,
+    auth_url: &str,
+) -> Result<String, String> {
+    let normalized = normalize_platform_id(platform_id);
+    let mut url = Url::parse(auth_url).map_err(|error| format!("快手授权地址无效: {error}"))?;
+    if normalized == "kuaishou" {
+        if let Some(pc_url) = kuaishou_pc_authorize_url(&url) {
+            url = pc_url;
+        }
+    }
+    let label = relay_auth_window_label(platform_id, task_id);
+    close_relay_auth_windows_for_platform(app, platform_id, &label);
+    let title = format!("授权{} - 营销大师", platform_name(platform_id));
+
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_title(&title);
+        let _ = window.navigate(url);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(label);
+    }
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法创建快手授权窗口数据目录: {error}"))?
+        .join("relay-auth")
+        .join(&normalized)
+        .join(task_id);
+    let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
+        .title(&title)
+        .inner_size(1120.0, 780.0)
+        .min_inner_size(960.0, 640.0)
+        .data_directory(data_dir)
+        .data_store_identifier(task_data_store_identifier(task_id))
+        .user_agent(DESKTOP_CHROME_UA)
+        .on_page_load(move |window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                if let Some(next) = kuaishou_qrcode_login_url(payload.url()) {
+                    let _ = window.navigate(next);
+                }
+            }
+        })
+        .center()
+        .build()
+        .map_err(|error| format!("打开快手授权窗口失败: {error}"))?;
+    let _ = window.clear_all_browsing_data();
+    let _ = window.navigate(url);
+    Ok(label)
+}
+
+fn capture_auth_window_cookies_any(
+    app: &AppHandle,
+    label: Option<&str>,
+    urls: &[&str],
+) -> Option<String> {
+    let window = label.and_then(|label| app.get_webview_window(label))?;
+    collect_webview_cookies(&window, urls)
+        .ok()
+        .map(|(_, login_cookie)| login_cookie)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn relay_error_message(value: &Value) -> String {
+    first_string(value, &["message", "msg", "error", "reason"])
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| "AiToEarn relay 暂时不可用，请稍后再试".to_string())
+}
+
+fn aitoearn_platform_id(platform_id: &str) -> Option<&'static str> {
+    match normalize_platform_id(platform_id).as_str() {
+        "kuaishou" => Some("KWAI"),
+        _ => None,
+    }
+}
+
+fn encode_path_segment(value: &str) -> String {
+    form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+async fn check_creator_session(
+    app: &AppHandle,
+    account: &ChannelAccount,
+    saved_login_cookie: Option<&str>,
+    saved_webview_session_id: Option<&str>,
+) -> Result<CreatorSessionStatus, String> {
+    let platform_id = normalize_platform_id(&account.platform_id);
+    match platform_id.as_str() {
+        "xiaohongshu" => {
+            let profile = refresh_xhs_account_profile(app, account, saved_login_cookie)
+                .await?
+                .ok_or_else(|| "小红书登录已失效，请重新登录后再打开创作中心。".to_string())?;
+            if !xhs_profile_matches_account(&profile, account) {
+                return Err("当前小红书登录态不属于这个账号，请重新登录。".to_string());
+            }
+            let mut webview_session_id = saved_webview_session_id.map(ToString::to_string);
+            if webview_session_id.is_none() {
+                if let Some((session_id, _)) = find_xhs_session_for_account(app, account).await? {
+                    upsert_account_webview_session(app, &account.id, &session_id)?;
+                    webview_session_id = Some(session_id);
+                }
+            }
+            Ok(CreatorSessionStatus {
+                login_cookie: Some(profile.login_cookie.clone()),
+                webview_session_id,
+                profile: Some(profile),
+            })
+        }
+        "wechat-channels" => {
+            if let Some(login_cookie) = saved_login_cookie {
+                let cookie_header = login_cookie_to_header(login_cookie);
+                if !cookie_header.trim().is_empty() {
+                    match fetch_wx_channels_account_from_cookie(&cookie_header, login_cookie.to_string()).await {
+                        Ok(profile) if plugin_profile_matches_account(&profile, account) => {
+                            return Ok(CreatorSessionStatus {
+                                login_cookie: Some(profile.login_cookie.clone()),
+                                webview_session_id: saved_webview_session_id.map(ToString::to_string),
+                                profile: Some(profile),
+                            });
+                        }
+                        Ok(_) => {
+                            return Err("当前视频号登录态不属于这个账号，请重新登录。".to_string());
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[creator-session:wx-sph] saved cookie probe failed: {}",
+                                plugin_error_message(&error)
+                            );
+                        }
+                    }
+                }
+            }
+
+            let mut profile = None;
+            let mut webview_session_id = saved_webview_session_id.map(ToString::to_string);
+            if let Some(session_id) = webview_session_id.as_deref() {
+                profile = refresh_wx_channels_account_from_task_store(app, account, session_id).await?;
+            }
+            if profile.is_none() {
+                if let Some((session_id, found_profile)) = find_wx_channels_session_for_account(app, account).await? {
+                    profile = Some(found_profile);
+                    upsert_account_webview_session(app, &account.id, &session_id)?;
+                    webview_session_id = Some(session_id);
+                }
+            }
+            let Some(profile) = profile else {
+                return Err("视频号登录已失效，请重新登录后再打开创作中心。".to_string());
+            };
+            Ok(CreatorSessionStatus {
+                login_cookie: Some(profile.login_cookie.clone()),
+                webview_session_id,
+                profile: Some(profile),
+            })
+        }
+        "bilibili" => {
+            let (cookie_header, login_cookie) =
+                saved_cookie_header(saved_login_cookie, "B 站网页登录态已失效，请重新登录后再打开创作中心。")?;
+            let profile = probe_bilibili_creator_session(&cookie_header, login_cookie).await?;
+            Ok(CreatorSessionStatus {
+                login_cookie: Some(profile.login_cookie.clone()),
+                webview_session_id: saved_webview_session_id.map(ToString::to_string),
+                profile: Some(profile),
+            })
+        }
+        "douyin" => {
+            let (cookie_header, login_cookie) =
+                saved_cookie_header(saved_login_cookie, "抖音网页登录态已失效，请重新登录后再打开创作中心。")?;
+            if !has_douyin_login_cookie(&login_cookie) {
+                return Err("抖音网页登录态已失效，请重新登录后再打开创作中心。".to_string());
+            }
+            let profile = fetch_douyin_creator_account_from_cookie(&cookie_header, login_cookie.clone()).await?;
+            Ok(CreatorSessionStatus {
+                login_cookie: Some(login_cookie),
+                webview_session_id: saved_webview_session_id.map(ToString::to_string),
+                profile: Some(profile),
+            })
+        }
+        "kuaishou" => {
+            let (cookie_header, login_cookie) =
+                saved_cookie_header(saved_login_cookie, "快手网页登录态已失效，请重新登录后再打开创作中心。")?;
+            let profile = fetch_kuaishou_creator_account_from_cookie(&cookie_header, login_cookie.clone()).await?;
+            Ok(CreatorSessionStatus {
+                login_cookie: Some(login_cookie),
+                webview_session_id: saved_webview_session_id.map(ToString::to_string),
+                profile: Some(profile),
+            })
+        }
+        _ => Ok(CreatorSessionStatus::default()),
+    }
+}
+
+fn saved_cookie_header(saved_login_cookie: Option<&str>, expired_message: &str) -> Result<(String, String), String> {
+    let login_cookie = saved_login_cookie
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| expired_message.to_string())?
+        .to_string();
+    let cookie_header = login_cookie_to_header(&login_cookie);
+    if cookie_header.trim().is_empty() {
+        return Err(expired_message.to_string());
+    }
+    Ok((cookie_header, login_cookie))
+}
+
+fn first_bilibili_mid(data: &Value) -> Option<String> {
+    first_i64(data, &["mid", "uid", "id"])
+        .filter(|value| *value > 0)
+        .map(|value| value.to_string())
+        .or_else(|| {
+            first_string(data, &["mid", "uid", "id"])
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+async fn probe_bilibili_creator_session(
+    cookie_header: &str,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, String> {
+    let value = request_plugin_json(
+        "GET",
+        "https://api.bilibili.com/x/web-interface/nav",
+        cookie_header,
+        &[
+            ("Origin", "https://www.bilibili.com"),
+            ("Referer", "https://www.bilibili.com/"),
+        ],
+    )
+    .await
+    .map_err(|error| format!("B 站登录已失效，请重新登录后再打开创作中心。{error}"))?;
+    let data = value.get("data");
+    let is_login = data
+        .and_then(|data| data.get("isLogin"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if first_i64(&value, &["code"]).unwrap_or(-1) != 0 || !is_login {
+        return Err("B 站登录已失效，请重新登录后再打开创作中心。".to_string());
+    }
+
+    let uid = data
+        .and_then(first_bilibili_mid)
+        .unwrap_or_default();
+    let nickname = data
+        .and_then(|data| first_string(data, &["uname", "nickname", "name"]))
+        .unwrap_or_else(|| platform_name("bilibili").to_string());
+    let avatar = data
+        .and_then(|data| first_profile_image(data, &["face", "avatar", "avatarUrl", "avatar_url"]))
+        .unwrap_or_default();
+    let avatar = materialize_account_avatar("bilibili", avatar).await;
+    let account = if uid.trim().is_empty() {
+        nickname.clone()
+    } else {
+        uid.clone()
+    };
+    let mut fans_count = data.and_then(|data| first_count(data, BILIBILI_FOLLOWER_COUNT_KEYS));
+    if fans_count.is_none() {
+        fans_count = fetch_bilibili_fans_count(cookie_header, &uid).await;
+    }
+    Ok(PluginAccountInfo {
+        uid: account.clone(),
+        account,
+        nickname,
+        avatar,
+        fans_count,
+        like_count: data.and_then(|data| first_count(data, LIKE_COUNT_KEYS)),
+        login_cookie,
+    })
+}
+
+async fn fetch_bilibili_fans_count(cookie_header: &str, uid: &str) -> Option<u64> {
+    let uid = uid.trim();
+    if uid.is_empty() || !uid.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let value = request_plugin_json(
+        "GET",
+        &format!("https://api.bilibili.com/x/relation/stat?vmid={uid}"),
+        cookie_header,
+        &[
+            ("Origin", "https://www.bilibili.com"),
+            ("Referer", "https://www.bilibili.com/"),
+        ],
+    )
+    .await
+    .ok()?;
+    if first_i64(&value, &["code"]).unwrap_or(-1) != 0 {
+        return None;
+    }
+    value
+        .get("data")
+        .and_then(|data| first_count(data, BILIBILI_FOLLOWER_COUNT_KEYS))
 }
 
 async fn refresh_xhs_account_profile(
@@ -1407,8 +2094,7 @@ async fn refresh_wx_channels_account_from_task_store(
     account: &ChannelAccount,
     task_id: &str,
 ) -> Result<Option<PluginAccountInfo>, String> {
-    let url = Url::parse(WECHAT_CHANNELS_HOME_URL)
-        .map_err(|error| format!("视频号后台地址无效: {error}"))?;
+    let url = creator_home_url("wechat-channels", "视频号后台")?;
     let label = format!("wx-sph-refresh-{}", task_suffix(task_id));
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.close();
@@ -1510,7 +2196,6 @@ fn xhs_account_match_values(account: &ChannelAccount) -> Vec<String> {
         account.uid.clone(),
         account.nickname.clone(),
         account.id.clone(),
-        account.relay_account_ref.clone().unwrap_or_default(),
     ];
     values.extend(values.clone().into_iter().map(|value| {
         value
@@ -1537,7 +2222,6 @@ fn plugin_profile_matches_account(profile: &PluginAccountInfo, account: &Channel
         account.uid.as_str(),
         account.nickname.as_str(),
         account.id.as_str(),
-        account.relay_account_ref.as_deref().unwrap_or_default(),
     ]
     .into_iter()
     .map(normalize_match_key)
@@ -1560,7 +2244,6 @@ fn plugin_profile_matches_account_strong(
     let account_values = [
         account.uid.as_str(),
         account.id.as_str(),
-        account.relay_account_ref.as_deref().unwrap_or_default(),
     ]
     .into_iter()
     .map(normalize_match_key)
@@ -1601,1416 +2284,8 @@ fn plugin_error_message(error: &PluginAuthError) -> String {
     }
 }
 
-fn account_homepage_url(account: &ChannelAccount) -> Result<String, String> {
-    let platform_id = normalize_platform_id(&account.platform_id);
-    let uid = account.uid.trim();
-    let nickname = account.nickname.trim();
-    match platform_id.as_str() {
-        "douyin" => {
-            Ok(DOUYIN_CREATOR_HOME_URL.to_string())
-        }
-        "xiaohongshu" => {
-            Ok(XHS_CREATOR_HOME_URL.to_string())
-        }
-        "wechat-channels" => {
-            Ok(WECHAT_CHANNELS_HOME_URL.to_string())
-        }
-        "bilibili" => {
-            if !uid.is_empty() && uid.chars().all(|ch| ch.is_ascii_digit()) {
-                Ok(format!("https://space.bilibili.com/{}", encode_path_segment(uid)))
-            } else {
-                account_search_url("https://search.bilibili.com/upuser?keyword=", nickname)
-            }
-        }
-        "kuaishou" => {
-            if !uid.is_empty() {
-                Ok(format!("https://www.kuaishou.com/profile/{}", encode_path_segment(uid)))
-            } else {
-                account_search_url("https://www.kuaishou.com/search/author?searchKey=", nickname)
-            }
-        }
-        _ => Err("当前平台暂不支持打开主页".to_string()),
-    }
-}
-
-fn open_douyin_creator_webview(
-    app: &AppHandle,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-    saved_webview_session_id: Option<&str>,
-) -> Result<(), String> {
-    let url = Url::parse(DOUYIN_CREATOR_HOME_URL).map_err(|error| format!("抖音创作者中心地址无效: {error}"))?;
-    let window_key = stable_label_fragment(&account.id);
-    let label = format!("creator-home-douyin-{window_key}");
-    let title_name = if account.nickname.trim().is_empty() {
-        "抖音账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - 抖音创作者中心");
-
-    if let Some(window) = app.get_webview_window(&label) {
-        let should_delay_navigation = saved_login_cookie.is_some();
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_douyin_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        if should_delay_navigation {
-            navigate_webview_after_delay(window.clone(), url.clone());
-        } else {
-            let _ = window.navigate(url);
-        }
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-
-    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
-        (
-            app.path()
-                .app_data_dir()
-                .map_err(|error| format!("无法创建抖音创作者中心数据目录: {error}"))?
-                .join("auth-sessions")
-                .join("douyin")
-                .join(stable_label_fragment(session_id)),
-            task_data_store_identifier(session_id),
-        )
-    } else {
-        (
-            app.path()
-                .app_data_dir()
-                .map_err(|error| format!("无法创建抖音创作者中心数据目录: {error}"))?
-                .join("creator-home")
-                .join("douyin")
-                .join(&window_key),
-            stable_data_store_identifier(&format!("creator-home:douyin:{}", account.id)),
-        )
-    };
-    let account_id = account.id.clone();
-    let app_for_load = app.clone();
-
-    let initial_url = if saved_login_cookie.is_some() {
-        Url::parse("about:blank").map_err(|error| format!("空白页地址无效: {error}"))?
-    } else {
-        url.clone()
-    };
-
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(initial_url))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .data_directory(data_dir)
-        .data_store_identifier(data_store_identifier)
-        .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_douyin_web_url(payload.url())
-            {
-                let _ = persist_webview_account_cookies(
-                    &app_for_load,
-                    &window,
-                    &account_id,
-                    DOUYIN_COOKIE_URLS,
-                );
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开抖音创作者中心失败: {error}"))?;
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_douyin_login_cookie(&window, login_cookie);
-        navigate_webview_after_delay(window.clone(), url);
-    }
-
-    Ok(())
-}
-
-fn navigate_webview_after_delay(window: WebviewWindow<tauri::Wry>, url: Url) {
-    tauri::async_runtime::spawn(async move {
-        std::thread::sleep(std::time::Duration::from_millis(600));
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-    });
-}
-
-fn open_xhs_creator_webview(
-    app: &AppHandle,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-    saved_webview_session_id: Option<&str>,
-) -> Result<(), String> {
-    let url = Url::parse(XHS_CREATOR_HOME_URL).map_err(|error| format!("小红书创作中心地址无效: {error}"))?;
-    let window_key = stable_label_fragment(&account.id);
-    let label = format!("creator-home-xhs-{window_key}");
-    let title_name = if account.nickname.trim().is_empty() {
-        "小红书账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - 小红书创作中心");
-
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_xhs_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建小红书创作中心数据目录: {error}"))?;
-    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
-        (
-            app_data_dir
-                .join("plugin-auth")
-                .join("xiaohongshu")
-                .join(session_id),
-            task_data_store_identifier(session_id),
-        )
-    } else {
-        (
-            app_data_dir
-                .join("creator-home")
-                .join("xiaohongshu")
-                .join(&window_key),
-            stable_data_store_identifier(&format!("creator-home:xhs:{}", account.id)),
-        )
-    };
-    let account_id = account.id.clone();
-    let app_for_load = app.clone();
-
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .visible(true)
-        .focused(true)
-        .focusable(true)
-        .data_directory(data_dir)
-        .data_store_identifier(data_store_identifier)
-        .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_xhs_web_url(payload.url())
-            {
-                let _ = persist_webview_account_cookies_any(
-                    &app_for_load,
-                    &window,
-                    &account_id,
-                    XHS_COOKIE_URLS,
-                );
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开小红书创作中心失败: {error}"))?;
-    let _ = window.show();
-    let _ = window.set_focus();
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_xhs_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
-    }
-
-    Ok(())
-}
-
-fn open_wx_channels_webview(
-    app: &AppHandle,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-    saved_webview_session_id: Option<&str>,
-) -> Result<(), String> {
-    let url = Url::parse(WECHAT_CHANNELS_HOME_URL).map_err(|error| format!("视频号后台地址无效: {error}"))?;
-    let window_key = stable_label_fragment(&account.id);
-    let label = format!("creator-home-wx-sph-{window_key}");
-    let title_name = if account.nickname.trim().is_empty() {
-        "视频号账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - 视频号后台");
-
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_wx_channels_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建视频号后台数据目录: {error}"))?;
-    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
-        (
-            app_data_dir
-                .join("plugin-auth")
-                .join("wechat-channels")
-                .join(session_id),
-            task_data_store_identifier(session_id),
-        )
-    } else {
-        (
-            app_data_dir
-                .join("creator-home")
-                .join("wechat-channels")
-                .join(&window_key),
-            stable_data_store_identifier(&format!("creator-home:wx-sph:{}", account.id)),
-        )
-    };
-    let account_id = account.id.clone();
-    let app_for_load = app.clone();
-
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .visible(true)
-        .focused(true)
-        .focusable(true)
-        .data_directory(data_dir)
-        .data_store_identifier(data_store_identifier)
-        .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_wx_channels_web_url(payload.url())
-            {
-                let _ = persist_webview_account_cookies_any(
-                    &app_for_load,
-                    &window,
-                    &account_id,
-                    WECHAT_CHANNELS_COOKIE_URLS,
-                );
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开视频号后台失败: {error}"))?;
-    let _ = window.show();
-    let _ = window.set_focus();
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_wx_channels_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
-    }
-
-    Ok(())
-}
-
-fn open_bilibili_creator_webview(
-    app: &AppHandle,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-    saved_webview_session_id: Option<&str>,
-) -> Result<(), String> {
-    let url = Url::parse(BILIBILI_CREATOR_HOME_URL)
-        .map_err(|error| format!("B 站创作中心地址无效: {error}"))?;
-    let window_key = stable_label_fragment(&account.id);
-    let label = format!("creator-home-bilibili-{window_key}");
-    let title_name = if account.nickname.trim().is_empty() {
-        "B 站账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - B 站创作中心");
-
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_bilibili_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建 B 站创作中心数据目录: {error}"))?;
-    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
-        (
-            app_data_dir
-                .join("relay-auth")
-                .join("bilibili")
-                .join(session_id),
-            task_data_store_identifier(session_id),
-        )
-    } else {
-        (
-            app_data_dir
-                .join("creator-home")
-                .join("bilibili")
-                .join(&window_key),
-            stable_data_store_identifier(&format!("creator-home:bilibili:{}", account.id)),
-        )
-    };
-    let account_id = account.id.clone();
-    let app_for_load = app.clone();
-
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .visible(true)
-        .focused(true)
-        .focusable(true)
-        .data_directory(data_dir)
-        .data_store_identifier(data_store_identifier)
-        .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_bilibili_web_url(payload.url())
-            {
-                let _ = persist_webview_account_cookies_any(
-                    &app_for_load,
-                    &window,
-                    &account_id,
-                    BILIBILI_COOKIE_URLS,
-                );
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开 B 站创作中心失败: {error}"))?;
-    let _ = window.show();
-    let _ = window.set_focus();
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_bilibili_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
-    }
-
-    Ok(())
-}
-
-fn open_kuaishou_creator_webview(
-    app: &AppHandle,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-    saved_webview_session_id: Option<&str>,
-) -> Result<(), String> {
-    let url = Url::parse(KUAISHOU_CREATOR_HOME_URL)
-        .map_err(|error| format!("快手创作者中心地址无效: {error}"))?;
-    let window_key = stable_label_fragment(&account.id);
-    let label = format!("creator-home-kuaishou-{window_key}");
-    let title_name = if account.nickname.trim().is_empty() {
-        "快手账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - 快手创作者中心");
-
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_kuaishou_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建快手创作者中心数据目录: {error}"))?;
-    let (data_dir, data_store_identifier) = if let Some(session_id) = saved_webview_session_id {
-        (
-            app_data_dir
-                .join("relay-auth")
-                .join("kuaishou")
-                .join(session_id),
-            task_data_store_identifier(session_id),
-        )
-    } else {
-        (
-            app_data_dir
-                .join("creator-home")
-                .join("kuaishou")
-                .join(&window_key),
-            stable_data_store_identifier(&format!("creator-home:kuaishou:{}", account.id)),
-        )
-    };
-    let account_id = account.id.clone();
-    let app_for_load = app.clone();
-
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .visible(true)
-        .focused(true)
-        .focusable(true)
-        .data_directory(data_dir)
-        .data_store_identifier(data_store_identifier)
-        .user_agent(DESKTOP_CHROME_UA)
-        .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_kuaishou_web_url(payload.url())
-            {
-                let _ = persist_webview_account_cookies_any(
-                    &app_for_load,
-                    &window,
-                    &account_id,
-                    KUAISHOU_COOKIE_URLS,
-                );
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开快手创作者中心失败: {error}"))?;
-    let _ = window.show();
-    let _ = window.set_focus();
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_kuaishou_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
-    }
-
-    Ok(())
-}
-
-fn open_douyin_cookie_binding_window(
-    app: &AppHandle,
-    task_id: &str,
-    account: &ChannelAccount,
-    saved_login_cookie: Option<&str>,
-) -> Result<String, String> {
-    let url = Url::parse(DOUYIN_CREATOR_HOME_URL).map_err(|error| format!("抖音创作者中心地址无效: {error}"))?;
-    let label = format!("douyin-cookie-bind-{}", task_suffix(task_id));
-    let title_name = if account.nickname.trim().is_empty() {
-        "抖音账号"
-    } else {
-        account.nickname.trim()
-    };
-    let title = format!("{title_name} - 绑定抖音网页登录态");
-    eprintln!(
-        "[douyin-auth] building cookie binding window label={} account={}",
-        label, account.id
-    );
-
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Some(login_cookie) = saved_login_cookie {
-            let _ = inject_douyin_login_cookie(&window, login_cookie);
-        }
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.unminimize();
-        let _ = window.set_always_on_top(true);
-        let _ = window.show();
-        let _ = window.set_focus();
-        eprintln!("[douyin-auth] focused existing cookie binding window label={label}");
-        return Ok(label);
-    }
-
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建抖音登录态数据目录: {error}"))?
-        .join("auth-sessions")
-        .join("douyin")
-        .join(stable_label_fragment(task_id));
-
-    let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(980.0, 680.0)
-        .visible(true)
-        .focused(true)
-        .focusable(true)
-        .always_on_top(true)
-        .data_directory(data_dir)
-        .data_store_identifier(task_data_store_identifier(task_id))
-        .user_agent(DESKTOP_CHROME_UA)
-        .center()
-        .build()
-        .map_err(|error| format!("打开抖音登录态绑定窗口失败: {error}"))?;
-    let _ = window.unminimize();
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.set_focus();
-    eprintln!("[douyin-auth] opened cookie binding window label={label}");
-
-    if let Some(login_cookie) = saved_login_cookie {
-        let _ = inject_douyin_login_cookie(&window, login_cookie);
-        let _ = window.navigate(url);
-    }
-
-    Ok(label)
-}
-
-fn inject_douyin_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    login_cookie: &str,
-) -> Result<(), String> {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return Ok(());
-    }
-
-    if trimmed.starts_with('[') {
-        let Value::Array(cookies) =
-            serde_json::from_str::<Value>(trimmed).map_err(|error| format!("抖音登录态格式无效: {error}"))?
-        else {
-            return Ok(());
-        };
-
-        for cookie in cookies {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let raw_domain = cookie.get("domain").and_then(Value::as_str).unwrap_or("");
-            if !raw_domain.trim().is_empty() && !should_inject_douyin_cookie_domain(raw_domain) {
-                continue;
-            }
-            let domain = if raw_domain.trim().is_empty() {
-                ".douyin.com"
-            } else {
-                raw_domain
-            };
-            let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
-            let secure = cookie.get("secure").and_then(Value::as_bool).unwrap_or(true);
-            let http_only = cookie
-                .get("httpOnly")
-                .or_else(|| cookie.get("http_only"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            set_webview_cookie(window, name, value, domain, path, secure, http_only)?;
-        }
-        return Ok(());
-    }
-
-    for pair in trimmed.split(';') {
-        let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        set_webview_cookie(window, name, value, ".douyin.com", "/", true, false)?;
-    }
-    Ok(())
-}
-
-fn inject_xhs_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    login_cookie: &str,
-) -> Result<(), String> {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return Ok(());
-    }
-
-    if trimmed.starts_with('[') {
-        let Value::Array(cookies) =
-            serde_json::from_str::<Value>(trimmed).map_err(|error| format!("小红书登录态格式无效: {error}"))?
-        else {
-            return Ok(());
-        };
-
-        for cookie in cookies {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let raw_domain = cookie.get("domain").and_then(Value::as_str).unwrap_or("");
-            if !raw_domain.trim().is_empty() && !should_inject_xhs_cookie_domain(raw_domain) {
-                continue;
-            }
-            let domain = if raw_domain.trim().is_empty() {
-                ".xiaohongshu.com"
-            } else {
-                raw_domain
-            };
-            let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
-            let secure = cookie.get("secure").and_then(Value::as_bool).unwrap_or(true);
-            let http_only = cookie
-                .get("httpOnly")
-                .or_else(|| cookie.get("http_only"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            set_webview_cookie(window, name, value, domain, path, secure, http_only)?;
-        }
-        return Ok(());
-    }
-
-    for pair in trimmed.split(';') {
-        let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        set_webview_cookie(window, name, value, ".xiaohongshu.com", "/", true, false)?;
-    }
-    Ok(())
-}
-
-fn inject_wx_channels_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    login_cookie: &str,
-) -> Result<(), String> {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return Ok(());
-    }
-
-    if trimmed.starts_with('[') {
-        let Value::Array(cookies) =
-            serde_json::from_str::<Value>(trimmed).map_err(|error| format!("视频号登录态格式无效: {error}"))?
-        else {
-            return Ok(());
-        };
-
-        for cookie in cookies {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let raw_domain = cookie.get("domain").and_then(Value::as_str).unwrap_or("");
-            if !raw_domain.trim().is_empty() && !should_inject_wx_channels_cookie_domain(raw_domain) {
-                continue;
-            }
-            let domain = if raw_domain.trim().is_empty() {
-                "channels.weixin.qq.com"
-            } else {
-                raw_domain
-            };
-            let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
-            let secure = cookie.get("secure").and_then(Value::as_bool).unwrap_or(true);
-            let http_only = cookie
-                .get("httpOnly")
-                .or_else(|| cookie.get("http_only"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            set_webview_cookie(window, name, value, domain, path, secure, http_only)?;
-        }
-        return Ok(());
-    }
-
-    for pair in trimmed.split(';') {
-        let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        set_webview_cookie(
-            window,
-            name,
-            value,
-            "channels.weixin.qq.com",
-            "/",
-            true,
-            false,
-        )?;
-    }
-    Ok(())
-}
-
-fn inject_bilibili_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    login_cookie: &str,
-) -> Result<(), String> {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return Ok(());
-    }
-
-    if trimmed.starts_with('[') {
-        let Value::Array(cookies) =
-            serde_json::from_str::<Value>(trimmed).map_err(|error| format!("B 站登录态格式无效: {error}"))?
-        else {
-            return Ok(());
-        };
-
-        for cookie in cookies {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let raw_domain = cookie.get("domain").and_then(Value::as_str).unwrap_or("");
-            if !raw_domain.trim().is_empty() && !should_inject_bilibili_cookie_domain(raw_domain) {
-                continue;
-            }
-            let domain = if raw_domain.trim().is_empty() {
-                ".bilibili.com"
-            } else {
-                raw_domain
-            };
-            let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
-            let secure = cookie.get("secure").and_then(Value::as_bool).unwrap_or(true);
-            let http_only = cookie
-                .get("httpOnly")
-                .or_else(|| cookie.get("http_only"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            set_webview_cookie(window, name, value, domain, path, secure, http_only)?;
-        }
-        return Ok(());
-    }
-
-    for pair in trimmed.split(';') {
-        let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        set_webview_cookie(window, name, value, ".bilibili.com", "/", true, false)?;
-    }
-    Ok(())
-}
-
-fn inject_kuaishou_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    login_cookie: &str,
-) -> Result<(), String> {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return Ok(());
-    }
-
-    if trimmed.starts_with('[') {
-        let Value::Array(cookies) =
-            serde_json::from_str::<Value>(trimmed).map_err(|error| format!("快手登录态格式无效: {error}"))?
-        else {
-            return Ok(());
-        };
-
-        for cookie in cookies {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let raw_domain = cookie.get("domain").and_then(Value::as_str).unwrap_or("");
-            if !raw_domain.trim().is_empty() && !should_inject_kuaishou_cookie_domain(raw_domain) {
-                continue;
-            }
-            let domain = if raw_domain.trim().is_empty() {
-                ".kuaishou.com"
-            } else {
-                raw_domain
-            };
-            let path = cookie.get("path").and_then(Value::as_str).unwrap_or("/");
-            let secure = cookie.get("secure").and_then(Value::as_bool).unwrap_or(true);
-            let http_only = cookie
-                .get("httpOnly")
-                .or_else(|| cookie.get("http_only"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            set_webview_cookie(window, name, value, domain, path, secure, http_only)?;
-        }
-        return Ok(());
-    }
-
-    for pair in trimmed.split(';') {
-        let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        set_webview_cookie(window, name, value, ".kuaishou.com", "/", true, false)?;
-    }
-    Ok(())
-}
-
-fn set_webview_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    name: &str,
-    value: &str,
-    domain: &str,
-    path: &str,
-    secure: bool,
-    http_only: bool,
-) -> Result<(), String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Ok(());
-    }
-    let domain = domain.trim();
-    let path = path.trim();
-    let mut cookie = Cookie::build((name.to_string(), value.to_string()))
-        .path(if path.is_empty() { "/" } else { path })
-        .secure(secure);
-    if !domain.is_empty() {
-        cookie = cookie.domain(domain.to_string());
-    }
-    if http_only {
-        cookie = cookie.http_only(true);
-    }
-    window
-        .set_cookie(cookie.build())
-        .map_err(|error| format!("注入抖音登录态失败: {error}"))
-}
-
-fn persist_webview_account_cookies(
-    app: &AppHandle,
-    window: &WebviewWindow<tauri::Wry>,
-    account_id: &str,
-    urls: &[&str],
-) -> Result<(), String> {
-    let Some(login_cookie) = collect_webview_login_cookie(window, urls)? else {
-        return Ok(());
-    };
-    upsert_account_secret(app, account_id, &login_cookie)
-}
-
-fn persist_webview_account_cookies_any(
-    app: &AppHandle,
-    window: &WebviewWindow<tauri::Wry>,
-    account_id: &str,
-    urls: &[&str],
-) -> Result<(), String> {
-    let (cookie_header, login_cookie) = collect_webview_cookies(window, urls)?;
-    if cookie_header.trim().is_empty() {
-        return Ok(());
-    }
-    upsert_account_secret(app, account_id, &login_cookie)
-}
-
-fn take_pending_auth_cookie(app: &AppHandle, task_id: &str) -> Result<Option<String>, String> {
-    Ok(app
-        .state::<RuntimeState>()
-        .pending_auth_cookies
-        .lock()
-        .map_err(lock_error)?
-        .remove(task_id))
-}
-
-fn capture_auth_window_login_cookie(
-    app: &AppHandle,
-    window_label: Option<&str>,
-    urls: &[&str],
-) -> Option<String> {
-    let Some(window_label) = window_label else {
-        return None;
-    };
-    let Some(window) = app.get_webview_window(window_label) else {
-        return None;
-    };
-    collect_webview_login_cookie(&window, urls).ok().flatten()
-}
-
-fn capture_auth_window_cookies_any(
-    app: &AppHandle,
-    window_label: Option<&str>,
-    urls: &[&str],
-) -> Option<String> {
-    let Some(window_label) = window_label else {
-        return None;
-    };
-    let Some(window) = app.get_webview_window(window_label) else {
-        return None;
-    };
-    let (cookie_header, login_cookie) = collect_webview_cookies(&window, urls).ok()?;
-    if cookie_header.trim().is_empty() {
-        return None;
-    }
-    Some(login_cookie)
-}
-
-fn collect_webview_login_cookie(
-    window: &WebviewWindow<tauri::Wry>,
-    urls: &[&str],
-) -> Result<Option<String>, String> {
-    let (cookie_header, login_cookie) = collect_webview_cookies(window, urls)?;
-    if cookie_header.trim().is_empty() {
-        return Ok(None);
-    }
-    if !has_douyin_login_cookie(&login_cookie) {
-        return Ok(None);
-    }
-    Ok(Some(login_cookie))
-}
-
-fn has_douyin_login_cookie(login_cookie: &str) -> bool {
-    let trimmed = login_cookie.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    if trimmed.starts_with('[') {
-        let Ok(Value::Array(cookies)) = serde_json::from_str::<Value>(trimmed) else {
-            return false;
-        };
-        return cookies.iter().any(|cookie| {
-            let Some(name) = cookie.get("name").and_then(Value::as_str) else {
-                return false;
-            };
-            let Some(value) = cookie.get("value").and_then(Value::as_str) else {
-                return false;
-            };
-            if value.trim().is_empty() || !is_douyin_login_cookie_name(name) {
-                return false;
-            }
-            cookie
-                .get("domain")
-                .and_then(Value::as_str)
-                .map(should_inject_douyin_cookie_domain)
-                .unwrap_or(true)
-        });
-    }
-
-    trimmed.split(';').any(|pair| {
-        let Some((name, value)) = pair.trim().split_once('=') else {
-            return false;
-        };
-        is_douyin_login_cookie_name(name) && !value.trim().is_empty()
-    })
-}
-
-fn is_douyin_login_cookie_name(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    DOUYIN_LOGIN_COOKIE_NAMES.iter().any(|item| item == &name)
-}
-
-fn should_inject_douyin_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    domain.is_empty() || domain == "douyin.com" || domain.ends_with(".douyin.com")
-}
-
-fn should_inject_xhs_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    domain.is_empty() || domain == "xiaohongshu.com" || domain.ends_with(".xiaohongshu.com")
-}
-
-fn should_inject_wx_channels_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    domain.is_empty() || domain == "channels.weixin.qq.com"
-}
-
-fn should_inject_bilibili_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    domain.is_empty() || domain == "bilibili.com" || domain.ends_with(".bilibili.com")
-}
-
-fn should_inject_kuaishou_cookie_domain(domain: &str) -> bool {
-    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
-    domain.is_empty()
-        || domain == "kuaishou.com"
-        || domain.ends_with(".kuaishou.com")
-        || domain == "kwai.com"
-        || domain.ends_with(".kwai.com")
-}
-
-fn is_douyin_web_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| {
-            let host = host.to_ascii_lowercase();
-            host == "douyin.com" || host.ends_with(".douyin.com")
-        })
-        .unwrap_or(false)
-}
-
-fn is_xhs_web_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| {
-            let host = host.to_ascii_lowercase();
-            host == "xiaohongshu.com" || host.ends_with(".xiaohongshu.com")
-        })
-        .unwrap_or(false)
-}
-
-fn is_wx_channels_web_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| host.eq_ignore_ascii_case("channels.weixin.qq.com"))
-        .unwrap_or(false)
-}
-
-fn is_bilibili_web_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| {
-            let host = host.to_ascii_lowercase();
-            host == "bilibili.com" || host.ends_with(".bilibili.com")
-        })
-        .unwrap_or(false)
-}
-
-fn is_kuaishou_web_url(url: &Url) -> bool {
-    url.host_str()
-        .map(|host| {
-            let host = host.to_ascii_lowercase();
-            host == "kuaishou.com"
-                || host.ends_with(".kuaishou.com")
-                || host == "kwai.com"
-                || host.ends_with(".kwai.com")
-        })
-        .unwrap_or(false)
-}
-
-fn kuaishou_qrcode_login_url(url: &Url) -> Option<Url> {
-    let is_login_page = url
-        .host_str()
-        .map(|host| host.eq_ignore_ascii_case("open.kuaishou.com"))
-        .unwrap_or(false)
-        && url.path() == "/web/oauth/login";
-    if !is_login_page {
-        return None;
-    }
-    let has_qrcode_flag = url
-        .query_pairs()
-        .any(|(key, value)| key == "needQrcode" && value == "1");
-    if has_qrcode_flag {
-        return None;
-    }
-    let mut login_url = url.clone();
-    let has_qr_type = login_url
-        .query_pairs()
-        .any(|(key, _)| key == "needQrType");
-    {
-        let mut pairs = login_url.query_pairs_mut();
-        pairs.append_pair("needQrcode", "1");
-        if !has_qr_type {
-            pairs.append_pair("needQrType", "identity-verify-auto");
-        }
-    }
-    Some(login_url)
-}
-
-fn kuaishou_pc_authorize_url(url: &Url) -> Option<Url> {
-    let is_authorize_page = url
-        .host_str()
-        .map(|host| host.eq_ignore_ascii_case("open.kuaishou.com"))
-        .unwrap_or(false)
-        && url.path() == "/oauth2/authorize";
-    if !is_authorize_page {
-        return None;
-    }
-    if url
-        .query_pairs()
-        .any(|(key, value)| key == "ua" && value.eq_ignore_ascii_case("pc"))
-    {
-        return None;
-    }
-    let mut next = url.clone();
-    next.query_pairs_mut().append_pair("ua", "pc");
-    Some(next)
-}
-
-fn account_search_url(prefix: &str, keyword: &str) -> Result<String, String> {
-    if keyword.trim().is_empty() {
-        return Err("账号缺少主页标识，无法打开主页".to_string());
-    }
-    Ok(format!("{prefix}{}", encode_query(keyword.trim())))
-}
-
 fn is_plugin_auth_platform(platform_id: &str) -> bool {
-    matches!(platform_id, "xiaohongshu" | "xhs" | "wechat-channels" | "wxSph" | "wxsph")
-}
-
-fn should_open_relay_auth_in_app(platform_id: &str, auth_type: &str, url: &str) -> bool {
-    is_relay_auth_window_platform(platform_id)
-        && auth_type == "oauth"
-        && !url.trim().is_empty()
-        && !url.starts_with("data:image")
-}
-
-fn is_relay_auth_window_platform(platform_id: &str) -> bool {
-    matches!(
-        normalize_platform_id(platform_id).as_str(),
-        "bilibili" | "kuaishou" | "douyin"
-    )
-}
-
-fn task_suffix(task_id: &str) -> String {
-    task_id.chars().take(8).collect()
-}
-
-fn task_data_store_identifier(task_id: &str) -> [u8; 16] {
-    Uuid::parse_str(task_id)
-        .map(|uuid| *uuid.as_bytes())
-        .unwrap_or_else(|_| *Uuid::new_v4().as_bytes())
-}
-
-fn stable_label_fragment(value: &str) -> String {
-    format!("{:016x}", stable_hash(value, 0xcbf29ce484222325))
-}
-
-fn stable_data_store_identifier(value: &str) -> [u8; 16] {
-    let first = stable_hash(value, 0xcbf29ce484222325);
-    let second = stable_hash(value, 0x84222325cbf29ce4);
-    let mut bytes = [0_u8; 16];
-    bytes[..8].copy_from_slice(&first.to_le_bytes());
-    bytes[8..].copy_from_slice(&second.to_le_bytes());
-    bytes
-}
-
-fn stable_hash(value: &str, seed: u64) -> u64 {
-    value.as_bytes().iter().fold(seed, |hash, byte| {
-        (hash ^ (*byte as u64)).wrapping_mul(0x100000001b3)
-    })
-}
-
-fn relay_auth_window_label(platform_id: &str, task_id: &str) -> String {
-    format!(
-        "relay-auth-{}-{}",
-        normalize_platform_id(platform_id).replace('-', "_"),
-        task_suffix(task_id)
-    )
-}
-
-fn relay_auth_window_profile(_platform_id: &str) -> AuthWindowProfile {
-    AuthWindowProfile {
-        width: 1120.0,
-        height: 780.0,
-        min_width: 960.0,
-        min_height: 640.0,
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    }
-}
-
-fn close_auth_window_by_label(app: &AppHandle, label: Option<&str>) {
-    if let Some(label) = label {
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
-        }
-    }
-}
-
-fn plugin_auth_window_label(platform_id: &str, task_id: &str) -> String {
-    format!(
-        "plugin-auth-{}-{}",
-        normalize_platform_id(platform_id).replace('-', "_"),
-        task_suffix(task_id)
-    )
-}
-
-fn close_plugin_auth_windows_for_platform(app: &AppHandle, platform_id: &str, keep_label: &str) {
-    let legacy_label = format!(
-        "plugin-auth-{}",
-        normalize_platform_id(platform_id).replace('-', "_")
-    );
-    if legacy_label != keep_label {
-        if let Some(window) = app.get_webview_window(&legacy_label) {
-            let _ = window.close();
-        }
-    }
-    let prefix = format!(
-        "plugin-auth-{}-",
-        normalize_platform_id(platform_id).replace('-', "_")
-    );
-    for window in app.webview_windows().into_values() {
-        let label = window.label();
-        if label.starts_with(&prefix) && label != keep_label {
-            let _ = window.close();
-        }
-    }
-}
-
-fn close_relay_auth_windows_for_platform(app: &AppHandle, platform_id: &str, keep_label: &str) {
-    if !is_relay_auth_window_platform(platform_id) {
-        return;
-    }
-    let legacy_label = format!(
-        "relay-auth-{}",
-        normalize_platform_id(platform_id).replace('-', "_")
-    );
-    if legacy_label != keep_label {
-        if let Some(window) = app.get_webview_window(&legacy_label) {
-            let _ = window.close();
-        }
-    }
-    let prefix = format!(
-        "relay-auth-{}-",
-        normalize_platform_id(platform_id).replace('-', "_")
-    );
-    for window in app.webview_windows().into_values() {
-        let label = window.label();
-        if label.starts_with(&prefix) && label != keep_label {
-            let _ = window.close();
-        }
-    }
-}
-
-fn open_relay_auth_window(
-    app: &AppHandle,
-    platform_id: &str,
-    task_id: &str,
-    auth_url: &str,
-) -> Result<String, String> {
-    let normalized = normalize_platform_id(platform_id);
-    let mut url = Url::parse(auth_url).map_err(|error| format!("平台授权地址无效: {error}"))?;
-    if normalized == "kuaishou" {
-        if let Some(pc_url) = kuaishou_pc_authorize_url(&url) {
-            url = pc_url;
-        }
-    }
-    let label = relay_auth_window_label(platform_id, task_id);
-    let title = format!("授权{} - 营销大师", platform_name(platform_id));
-    let profile = relay_auth_window_profile(platform_id);
-    close_relay_auth_windows_for_platform(app, platform_id, &label);
-
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.set_title(&title);
-        let _ = window.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
-            profile.min_width,
-            profile.min_height,
-        ))));
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
-            profile.width,
-            profile.height,
-        )));
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(label);
-    }
-
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建授权窗口数据目录: {error}"))?
-        .join("relay-auth")
-        .join(&normalized)
-        .join(task_id);
-    let normalized_for_load = normalized.clone();
-
-    let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(profile.width, profile.height)
-        .min_inner_size(profile.min_width, profile.min_height)
-        .data_directory(data_dir)
-        .data_store_identifier(task_data_store_identifier(task_id))
-        .user_agent(profile.user_agent)
-        .on_page_load(move |window, payload| {
-            if normalized_for_load == "kuaishou"
-                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-            {
-                if let Some(next) = kuaishou_qrcode_login_url(payload.url()) {
-                    let _ = window.navigate(next);
-                }
-            }
-        })
-        .center()
-        .build()
-        .map_err(|error| format!("打开平台授权窗口失败: {error}"))?;
-    if matches!(normalized.as_str(), "bilibili" | "kuaishou") {
-        let _ = window.clear_all_browsing_data();
-        let _ = window.navigate(url);
-    }
-
-    Ok(label)
-}
-
-fn normalize_plugin_login_target(platform_id: &str, login_target: Option<&str>) -> Option<&'static str> {
-    if matches!(platform_id, "xiaohongshu" | "xhs") {
-        return match login_target {
-            Some("home" | "homepage") => Some("home"),
-            Some("creator" | "creator-center" | "creation") => Some("creator"),
-            _ => Some("creator"),
-        };
-    }
-    None
-}
-
-fn plugin_login_url(platform_id: &str, login_target: Option<&str>) -> Option<&'static str> {
-    match platform_id {
-        "xiaohongshu" | "xhs" => match login_target {
-            Some("home") => Some(XHS_CREATOR_HOME_URL),
-            _ => Some("https://creator.xiaohongshu.com/"),
-        },
-        "wechat-channels" | "wxSph" | "wxsph" => Some("https://channels.weixin.qq.com/platform"),
-        _ => None,
-    }
-}
-
-fn open_plugin_login_window(
-    app: &AppHandle,
-    platform_id: &str,
-    task_id: &str,
-    login_target: Option<&str>,
-) -> Result<AitoearnAuthSession, String> {
-    let login_url = plugin_login_url(platform_id, login_target)
-        .ok_or_else(|| "当前平台不支持插件式授权".to_string())?;
-    let url = Url::parse(login_url).map_err(|error| format!("平台登录地址无效: {error}"))?;
-    let label = plugin_auth_window_label(platform_id, task_id);
-    let title = match (normalize_platform_id(platform_id).as_str(), login_target) {
-        ("xiaohongshu", Some("home")) => "登录小红书主页 - 营销大师".to_string(),
-        ("xiaohongshu", Some("creator")) => "登录小红书创作中心 - 营销大师".to_string(),
-        _ => format!("登录{} - 营销大师", platform_name(platform_id)),
-    };
-    close_plugin_auth_windows_for_platform(app, platform_id, &label);
-
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.set_title(&title);
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(AitoearnAuthSession {
-            url: login_url.to_string(),
-            session_id: label,
-            expires_at: None,
-            instructions: Some(plugin_login_instructions(platform_id, login_target)),
-            auth_type: "plugin".to_string(),
-        });
-    }
-
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法创建授权窗口数据目录: {error}"))?
-        .join("plugin-auth")
-        .join(normalize_platform_id(platform_id))
-        .join(task_id);
-
-    let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
-        .title(&title)
-        .inner_size(1120.0, 780.0)
-        .min_inner_size(960.0, 640.0)
-        .data_directory(data_dir)
-        .data_store_identifier(task_data_store_identifier(task_id))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-        .center()
-        .build()
-        .map_err(|error| format!("打开平台登录窗口失败: {error}"))?;
-    if matches!(
-        normalize_platform_id(platform_id).as_str(),
-        "xiaohongshu" | "wechat-channels"
-    ) {
-        let _ = window.clear_all_browsing_data();
-        let _ = window.navigate(url);
-    }
-
-    Ok(AitoearnAuthSession {
-        url: login_url.to_string(),
-        session_id: label,
-        expires_at: None,
-        instructions: Some(plugin_login_instructions(platform_id, login_target)),
-        auth_type: "plugin".to_string(),
-    })
-}
-
-fn plugin_login_instructions(platform_id: &str, login_target: Option<&str>) -> String {
-    match (normalize_platform_id(platform_id).as_str(), login_target) {
-        ("xiaohongshu", Some("home")) => {
-            "请在打开的小红书主页完成登录。当前客户端以创作中心登录作为账号授权成功标准。".to_string()
-        }
-        ("xiaohongshu", Some("creator")) => {
-            "请在打开的小红书创作中心完成登录，登录成功后会自动同步账号资料。".to_string()
-        }
-        _ => format!(
-            "请在打开的{}窗口完成登录，登录成功后点击检查状态同步账号。",
-            platform_name(platform_id)
-        ),
-    }
+    channels::is_plugin_auth_platform(platform_id)
 }
 
 async fn collect_plugin_account_info(
@@ -3025,12 +2300,513 @@ async fn collect_plugin_account_info(
     match normalize_platform_id(platform_id).as_str() {
         "xiaohongshu" => Ok(collect_xhs_plugin_account(&window, login_target).await?),
         "wechat-channels" => Ok(collect_wx_sph_plugin_account(&window).await?),
+        "bilibili" => Ok(collect_bilibili_plugin_account(&window).await?),
+        "douyin" => Ok(collect_douyin_plugin_account(&window).await?),
+        "kuaishou" => Ok(collect_kuaishou_plugin_account(&window).await?),
         _ => {
             return Err(PluginAuthError::Failed(
                 "当前平台不支持插件式授权".to_string(),
             ))
         }
     }
+}
+
+async fn collect_bilibili_plugin_account(
+    window: &WebviewWindow<tauri::Wry>,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    let (cookie_header, login_cookie) =
+        collect_webview_cookies(window, channel_cookie_urls("bilibili"))
+            .map_err(PluginAuthError::Failed)?;
+    if cookie_header.trim().is_empty() {
+        return Err(PluginAuthError::NotLoggedIn(
+            "请先在打开的 B 站窗口完成登录。".to_string(),
+        ));
+    }
+    probe_bilibili_creator_session(&cookie_header, login_cookie)
+        .await
+        .map_err(PluginAuthError::NotLoggedIn)
+}
+
+async fn collect_douyin_plugin_account(
+    window: &WebviewWindow<tauri::Wry>,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    let (cookie_header, login_cookie) =
+        collect_webview_cookies(window, channel_cookie_urls("douyin"))
+            .map_err(PluginAuthError::Failed)?;
+    if !has_douyin_login_cookie(&login_cookie) {
+        return Err(PluginAuthError::NotLoggedIn(
+            "请先在打开的抖音创作者中心完成登录。".to_string(),
+        ));
+    }
+    fetch_douyin_creator_account_from_cookie(&cookie_header, login_cookie)
+        .await
+        .map_err(PluginAuthError::Failed)
+}
+
+async fn fetch_douyin_creator_account_from_cookie(
+    cookie_header: &str,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, String> {
+    let headers = [
+        ("Origin", "https://creator.douyin.com"),
+        (
+            "Referer",
+            "https://creator.douyin.com/creator-micro/home?enter_from=dou_web",
+        ),
+    ];
+    let pc_user = request_plugin_json(
+        "GET",
+        "https://creator.douyin.com/aweme/v1/creator/pc/user/info/",
+        cookie_header,
+        &headers,
+    )
+    .await
+    .map_err(|error| format!("抖音创作者中心账号接口不可用: {error}"))?;
+    if !douyin_response_success(&pc_user) {
+        return Err("抖音网页登录态已失效，请重新登录后再打开创作中心。".to_string());
+    }
+
+    let user = request_plugin_json(
+        "GET",
+        "https://creator.douyin.com/aweme/v1/creator/user/info/",
+        cookie_header,
+        &headers,
+    )
+    .await
+    .map_err(|error| format!("抖音创作者中心资料接口不可用: {error}"))?;
+    if !douyin_response_success(&user) {
+        return Err("抖音创作者中心资料读取失败，请重新登录后再同步。".to_string());
+    }
+
+    let verify_info = user
+        .get("douyin_user_verify_info")
+        .or_else(|| user.get("user_profile"));
+    let uid = first_string_deep(
+        &pc_user,
+        &["uid", "user_id", "userId", "sec_uid", "secUid"],
+    )
+    .or_else(|| {
+        verify_info.and_then(|value| {
+            first_string_deep(
+                value,
+                &[
+                    "uid",
+                    "user_id",
+                    "userId",
+                    "sec_uid",
+                    "secUid",
+                    "douyin_unique_id",
+                    "unique_id",
+                    "uniqueId",
+                ],
+            )
+        })
+    })
+    .or_else(|| {
+        first_string_deep(
+            &user,
+            &[
+                "uid",
+                "user_id",
+                "userId",
+                "sec_uid",
+                "secUid",
+                "douyin_unique_id",
+                "unique_id",
+                "uniqueId",
+            ],
+        )
+    })
+    .unwrap_or_else(|| stable_label_fragment(cookie_header));
+    let nickname = verify_info
+        .and_then(|value| {
+            first_string_deep(
+                value,
+                &[
+                    "nick_name",
+                    "nickName",
+                    "nickname",
+                    "name",
+                    "display_name",
+                    "displayName",
+                ],
+            )
+        })
+        .or_else(|| {
+            first_string_deep(
+                &user,
+                &[
+                    "nick_name",
+                    "nickName",
+                    "nickname",
+                    "name",
+                    "display_name",
+                    "displayName",
+                ],
+            )
+        })
+        .unwrap_or_else(|| platform_name("douyin").to_string());
+    let avatar = verify_info
+        .and_then(|value| {
+            first_profile_image(
+                value,
+                &[
+                    "avatar_url",
+                    "avatarUrl",
+                    "avatar",
+                    "avatar_thumb",
+                    "avatarThumb",
+                    "head_img",
+                    "headImg",
+                ],
+            )
+        })
+        .or_else(|| {
+            first_profile_image(
+                &user,
+                &[
+                    "avatar_url",
+                    "avatarUrl",
+                    "avatar",
+                    "avatar_thumb",
+                    "avatarThumb",
+                    "head_img",
+                    "headImg",
+                ],
+            )
+        })
+        .unwrap_or_default();
+    let fans_count = verify_info
+        .and_then(|value| first_count(value, FOLLOWER_COUNT_KEYS))
+        .or_else(|| first_count(&user, FOLLOWER_COUNT_KEYS));
+
+    Ok(PluginAccountInfo {
+        uid: uid.clone(),
+        account: uid,
+        nickname,
+        avatar,
+        fans_count,
+        like_count: None,
+        login_cookie,
+    })
+}
+
+fn douyin_response_success(value: &Value) -> bool {
+    first_i64(value, &["status_code", "code", "errCode", "errcode"])
+        .map(|code| code == 0)
+        .unwrap_or(true)
+}
+
+async fn collect_kuaishou_plugin_account(
+    window: &WebviewWindow<tauri::Wry>,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    let (cookie_header, login_cookie) =
+        collect_webview_cookies(window, channel_cookie_urls("kuaishou"))
+            .map_err(PluginAuthError::Failed)?;
+    if cookie_header.trim().is_empty() {
+        return Err(PluginAuthError::NotLoggedIn(
+            "请先在打开的快手创作者中心完成登录。".to_string(),
+        ));
+    }
+    if has_kuaishou_creator_login_cookie_header(&cookie_header)
+        && kuaishou_auth_window_should_enter_creator(window)
+    {
+        if let Ok(url) = creator_home_url("kuaishou", "快手创作者中心") {
+            let _ = window.navigate(url);
+            let _ = window.show();
+            let _ = window.set_focus();
+            return Err(PluginAuthError::NotLoggedIn(
+                "已检测到快手登录态，正在进入快手创作者中心，请稍候。".to_string(),
+            ));
+        }
+    }
+    match request_kuaishou_creator_home_info_from_webview(window).await {
+        Ok(value) => {
+            return parse_kuaishou_creator_account(value, login_cookie)
+                .await
+                .map_err(PluginAuthError::NotLoggedIn);
+        }
+        Err(_) => {
+            log_kuaishou_login_snapshot(window, &cookie_header).await;
+        }
+    }
+    fetch_kuaishou_creator_account_from_cookie(&cookie_header, login_cookie)
+        .await
+        .map_err(PluginAuthError::NotLoggedIn)
+}
+
+fn has_kuaishou_creator_login_cookie_header(cookie_header: &str) -> bool {
+    cookie_header.split(';').any(|pair| {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            return false;
+        };
+        let name = name.trim();
+        !value.trim().is_empty()
+            && matches!(
+                name,
+                "kuaishou.web.cp.api_st"
+                    | "kuaishou.web.cp.api_ph"
+                    | "passToken"
+                    | "userId"
+                    | "bUserId"
+            )
+    }) && cookie_header
+        .split(';')
+        .any(|pair| pair.trim().starts_with("kuaishou.web.cp.api_st="))
+}
+
+fn kuaishou_auth_window_should_enter_creator(window: &WebviewWindow<tauri::Wry>) -> bool {
+    let Ok(url) = window.url() else {
+        return true;
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    !host.contains("cp.kuaishou.com")
+}
+
+async fn request_kuaishou_creator_home_info_from_webview(
+    window: &WebviewWindow<tauri::Wry>,
+) -> Result<Value, String> {
+    let script = r#"
+        (() => {
+          try {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', 'https://cp.kuaishou.com/rest/cp/creator/pc/home/infoV2', false);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+            xhr.setRequestHeader('Content-Type', 'application/json;charset=utf-8');
+            xhr.send('{}');
+            const text = xhr.responseText || '';
+            let data = null;
+            try {
+              data = JSON.parse(text);
+            } catch (error) {
+              data = { parseError: String(error), text: text.slice(0, 400) };
+            }
+            return { ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, url: location.href, data };
+          } catch (error) {
+            return { ok: false, status: 0, url: location.href, error: String(error) };
+          }
+        })()
+    "#;
+    let (sender, receiver) = oneshot::channel::<String>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let callback_sender = Arc::clone(&sender);
+    window
+        .eval_with_callback(script, move |raw| {
+            if let Ok(mut sender) = callback_sender.lock() {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(raw);
+                }
+            }
+        })
+        .map_err(|error| format!("无法在快手登录窗口检查登录状态: {error}"))?;
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(10), receiver)
+        .await
+        .map_err(|_| "快手登录窗口状态检查超时".to_string())?
+        .map_err(|_| "快手登录窗口状态检查被取消".to_string())?;
+    let wrapped: Value =
+        serde_json::from_str(&raw).map_err(|error| format!("快手登录窗口状态不是 JSON: {error}"))?;
+    let status = first_i64(&wrapped, &["status"]).unwrap_or(0);
+    let ok = wrapped
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(status >= 200 && status < 300);
+    let url = wrapped.get("url").and_then(Value::as_str).unwrap_or_default();
+    if !ok {
+        eprintln!(
+            "[plugin-auth:kuaishou] webview status={status} url={}",
+            sanitize_sensitive_url(url)
+        );
+        return Err("请先在打开的快手创作者中心完成登录。".to_string());
+    }
+    wrapped
+        .get("data")
+        .cloned()
+        .ok_or_else(|| "快手登录窗口状态缺少账号资料".to_string())
+}
+
+async fn log_kuaishou_login_snapshot(
+    window: &WebviewWindow<tauri::Wry>,
+    cookie_header: &str,
+) {
+    eprintln!(
+        "[plugin-auth:kuaishou] cookie names={:?}",
+        cookie_names_from_header(cookie_header)
+    );
+    let script = r#"
+        (() => {
+          const keys = (store) => {
+            try {
+              return Object.keys(store || {}).slice(0, 50);
+            } catch (_) {
+              return [];
+            }
+          };
+          const cookieNames = (() => {
+            try {
+              return String(document.cookie || '')
+                .split(';')
+                .map((item) => item.split('=')[0].trim())
+                .filter(Boolean)
+                .slice(0, 50);
+            } catch (_) {
+              return [];
+            }
+          })();
+          return {
+            url: location.href,
+            title: document.title,
+            cookieNames,
+            localStorageKeys: keys(localStorage),
+            sessionStorageKeys: keys(sessionStorage)
+          };
+        })()
+    "#;
+    let (sender, receiver) = oneshot::channel::<String>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let callback_sender = Arc::clone(&sender);
+    if let Err(error) = window.eval_with_callback(script, move |raw| {
+        if let Ok(mut sender) = callback_sender.lock() {
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(raw);
+            }
+        }
+    }) {
+        eprintln!("[plugin-auth:kuaishou] snapshot failed: {error}");
+        return;
+    }
+    let Ok(Ok(raw)) = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await else {
+        eprintln!("[plugin-auth:kuaishou] snapshot timeout");
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&raw) else {
+        eprintln!("[plugin-auth:kuaishou] snapshot is not json");
+        return;
+    };
+    if let Some(url) = value.get("url").and_then(Value::as_str).map(sanitize_sensitive_url) {
+        value["url"] = Value::String(url);
+    }
+    eprintln!("[plugin-auth:kuaishou] snapshot={value}");
+}
+
+fn cookie_names_from_header(cookie_header: &str) -> Vec<String> {
+    cookie_header
+        .split(';')
+        .filter_map(|pair| pair.trim().split_once('=').map(|(name, _)| name.trim()))
+        .filter(|name| !name.is_empty())
+        .take(50)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn sanitize_sensitive_url(raw: &str) -> String {
+    let Ok(mut url) = Url::parse(raw) else {
+        return raw.to_string();
+    };
+    let sensitive_keys = [
+        "authToken",
+        "token",
+        "access_token",
+        "refresh_token",
+        "passToken",
+        "captchaToken",
+    ];
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let redacted = sensitive_keys
+                .iter()
+                .any(|item| key.eq_ignore_ascii_case(item));
+            if redacted {
+                (key.into_owned(), "***".to_string())
+            } else {
+                (key.into_owned(), value.into_owned())
+            }
+        })
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    if !pairs.is_empty() {
+        {
+            let mut query = url.query_pairs_mut();
+            for (key, value) in pairs {
+                query.append_pair(&key, &value);
+            }
+        }
+    }
+    url.to_string()
+}
+
+async fn fetch_kuaishou_creator_account_from_cookie(
+    cookie_header: &str,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, String> {
+    let value = request_plugin_json(
+        "POST",
+        "https://cp.kuaishou.com/rest/cp/creator/pc/home/infoV2",
+        cookie_header,
+        &[
+            ("Origin", "https://cp.kuaishou.com"),
+            ("Referer", "https://cp.kuaishou.com/profile"),
+        ],
+    )
+    .await
+    .map_err(|error| format!("快手创作者中心账号接口不可用: {error}"))?;
+    parse_kuaishou_creator_account(value, login_cookie).await
+}
+
+async fn parse_kuaishou_creator_account(
+    value: Value,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, String> {
+    let payload = value.get("data").filter(|data| !data.is_null()).unwrap_or(&value);
+    let result = first_i64(&value, &["result", "code", "errCode", "errcode"]).unwrap_or(1);
+    let uid = first_string_deep(payload, &["userKwaiId", "kwaiId", "userId", "id", "uid"])
+        .or_else(|| {
+            first_count(payload, &["userId", "id", "uid"])
+                .filter(|value| *value > 0)
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_default();
+    let nickname = first_string_deep(payload, &["userName", "nickname", "name", "displayName"])
+        .unwrap_or_else(|| platform_name("kuaishou").to_string());
+    let has_profile = !uid.trim().is_empty() || nickname != platform_name("kuaishou");
+    let top_keys = value
+        .as_object()
+        .map(|object| object.keys().take(8).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    eprintln!(
+        "[plugin-auth:kuaishou] result={result} has_profile={has_profile} keys={top_keys:?}"
+    );
+    if result == 500002 || !has_profile {
+        return Err("请先在打开的快手创作者中心完成登录。".to_string());
+    }
+    let avatar = first_profile_image(
+        payload,
+        &[
+            "userAvatar",
+            "avatar",
+            "avatarUrl",
+            "avatar_url",
+            "headUrl",
+            "head_url",
+        ],
+    )
+    .unwrap_or_default();
+    let avatar = materialize_account_avatar("kuaishou", avatar).await;
+    let account = if uid.trim().is_empty() {
+        nickname.clone()
+    } else {
+        uid.clone()
+    };
+    Ok(PluginAccountInfo {
+        uid: account.clone(),
+        account,
+        nickname,
+        avatar,
+        fans_count: first_count(payload, &["fansCnt", "fansCount", "fans", "followers"]),
+        like_count: first_count(payload, &["likeCnt", "likeCount", "likes"]),
+        login_cookie,
+    })
 }
 
 async fn collect_xhs_plugin_account(
@@ -3067,7 +2843,20 @@ async fn fetch_xhs_plugin_account_from_cookie(
     login_cookie: String,
     login_target: Option<&str>,
 ) -> Result<PluginAccountInfo, PluginAuthError> {
-    let home_result = request_plugin_json(
+    let user_result = request_plugin_json(
+        "GET",
+        "https://creator.xiaohongshu.com/api/galaxy/user/info",
+        cookie_header,
+        &[
+            ("Origin", "https://creator.xiaohongshu.com"),
+            ("Referer", "https://creator.xiaohongshu.com/new/home"),
+        ],
+    )
+    .await;
+    if let Err(error) = &user_result {
+        eprintln!("[plugin-auth:xhs] creator user request failed: {error}");
+    }
+    let edith_result = request_plugin_json(
         "GET",
         "https://edith.xiaohongshu.com/api/sns/web/v2/user/me",
         cookie_header,
@@ -3077,8 +2866,8 @@ async fn fetch_xhs_plugin_account_from_cookie(
         ],
     )
     .await;
-    if let Err(error) = &home_result {
-        eprintln!("[plugin-auth:xhs] home profile request failed: {error}");
+    if let Err(error) = &edith_result {
+        eprintln!("[plugin-auth:xhs] edith profile request failed: {error}");
     }
     let creator_result = request_plugin_json(
         "GET",
@@ -3086,79 +2875,184 @@ async fn fetch_xhs_plugin_account_from_cookie(
         cookie_header,
         &[
             ("Origin", "https://creator.xiaohongshu.com"),
-            ("Referer", "https://creator.xiaohongshu.com/"),
+            ("Referer", "https://creator.xiaohongshu.com/new/home"),
         ],
     )
     .await;
     if let Err(error) = &creator_result {
         eprintln!("[plugin-auth:xhs] creator profile request failed: {error}");
     }
-    let home = home_result.ok();
+    let user = user_result.ok();
+    let edith = edith_result.ok();
     let creator = creator_result.ok();
-    let home_data = home.as_ref().and_then(|value| value.get("data"));
-    let creator_data = creator.as_ref().and_then(|value| value.get("data"));
-    let home_ok = home
+    let user_data = user.as_ref().and_then(xhs_response_payload);
+    let edith_data = edith.as_ref().and_then(xhs_response_payload);
+    let creator_data = creator.as_ref().and_then(xhs_response_payload);
+    let user_uid = user_data.and_then(|data| {
+        first_string_deep(
+            data,
+            &[
+                "user_id", "red_id", "userId", "user_id", "id", "redId", "red_id",
+            ],
+        )
+    });
+    let edith_uid = edith_data.and_then(|data| first_string_deep(data, &["user_id", "red_id", "userId", "id"]));
+    let creator_uid = creator_data.and_then(|data| {
+        first_string_deep(
+            data,
+            &[
+                "user_id",
+                "red_id",
+                "userId",
+                "id",
+                "creator_id",
+                "creatorId",
+                "author_id",
+                "authorId",
+            ],
+        )
+    });
+    let user_nickname = user_data.and_then(|data| {
+        first_string_deep(
+            data,
+            &[
+                "userName",
+                "user_name",
+                "nickname",
+                "nickName",
+                "name",
+                "red_id",
+                "redId",
+            ],
+        )
+    });
+    let creator_nickname = creator_data.and_then(|data| {
+        first_string_deep(
+            data,
+            &[
+                "name",
+                "nickname",
+                "nickName",
+                "user_name",
+                "userName",
+                "creator_name",
+                "creatorName",
+            ],
+        )
+    });
+    let user_avatar = user_data.and_then(|data| {
+        first_profile_image(
+            data,
+            &[
+                "userAvatar",
+                "user_avatar",
+                "avatar",
+                "avatar_url",
+                "avatarUrl",
+                "head_img",
+                "headImg",
+                "headImgUrl",
+            ],
+        )
+    });
+    let creator_avatar = creator_data.and_then(|data| {
+        first_profile_image(
+            data,
+            &[
+                "avatar",
+                "avatar_url",
+                "avatarUrl",
+                "head_img",
+                "headImg",
+                "headImgUrl",
+                "image",
+                "image_url",
+                "imageUrl",
+                "profile_image_url",
+                "profilePicture",
+            ],
+        )
+    });
+    let creator_fans_count = creator_data.and_then(|data| first_count(data, FOLLOWER_COUNT_KEYS));
+    let creator_like_count = creator_data.and_then(|data| first_count(data, LIKE_COUNT_KEYS));
+    let user_ok = user
         .as_ref()
-        .map(|value| response_success(value) && home_data.and_then(|data| first_string(data, &["red_id"])).is_some())
+        .map(|value| response_success(value) && user_uid.is_some())
         .unwrap_or(false);
+    let creator_has_profile = creator_uid.is_some()
+        || creator_nickname.is_some()
+        || creator_avatar.is_some()
+        || creator_fans_count.is_some()
+        || creator_like_count.is_some();
     let creator_ok = creator
         .as_ref()
-        .map(|value| response_success(value) && creator_data.is_some())
+        .map(|value| response_success(value) && creator_has_profile)
         .unwrap_or(false);
-    eprintln!("[plugin-auth:xhs] home_ok={home_ok} creator_ok={creator_ok}");
-    if !creator_ok {
+    eprintln!("[plugin-auth:xhs] user_ok={user_ok} creator_ok={creator_ok}");
+    if !user_ok || !creator_ok {
         return Err(PluginAuthError::NotLoggedIn(match login_target {
             Some("home") => "请先在打开的小红书主页完成登录。".to_string(),
             _ => "请先在打开的小红书创作中心完成登录。".to_string(),
         }));
     }
 
-    let uid = first_string_from_values(
-        &[home_data, creator_data],
-        &["user_id", "red_id", "userId", "id"],
-    )
-    .unwrap_or_default();
-    let nickname = first_string_from_values(
-        &[creator_data, home_data],
-        &["name", "nickname", "nickName", "user_name", "userName", "red_id"],
-    )
-    .unwrap_or_else(|| platform_name("xiaohongshu").to_string());
-    let avatar = first_profile_image_from_values(
-        &[creator_data, home_data],
-        &[
-            "avatar",
-            "avatar_url",
-            "avatarUrl",
-            "head_img",
-            "headImg",
-            "headImgUrl",
-            "image",
-            "image_url",
-            "imageUrl",
-            "profile_image_url",
-            "profilePicture",
-        ],
-    )
-    .unwrap_or_default();
+    let uid = creator_uid.or(user_uid).or(edith_uid).unwrap_or_default();
+    let nickname = creator_nickname
+        .or(user_nickname)
+        .or_else(|| {
+            edith_data.and_then(|data| {
+                first_string_deep(
+                    data,
+                    &["name", "nickname", "nickName", "user_name", "userName", "red_id"],
+                )
+            })
+        })
+        .unwrap_or_default();
+    let avatar = creator_avatar
+        .or(user_avatar)
+        .or_else(|| {
+            edith_data.and_then(|data| {
+                first_profile_image(
+                    data,
+                    &[
+                        "avatar",
+                        "avatar_url",
+                        "avatarUrl",
+                        "head_img",
+                        "headImg",
+                        "headImgUrl",
+                        "image",
+                        "image_url",
+                        "imageUrl",
+                        "profile_image_url",
+                        "profilePicture",
+                    ],
+                )
+            })
+        })
+        .map(normalize_image_url)
+        .unwrap_or_default();
     let avatar = materialize_account_avatar("xiaohongshu", avatar).await;
     let account = if uid.trim().is_empty() {
         nickname.clone()
     } else {
         uid.clone()
     };
-    if account.trim().is_empty() {
+    if account.trim().is_empty() || account == platform_name("xiaohongshu") {
         return Err(PluginAuthError::NotLoggedIn(
             "小红书已登录，但没有读取到账号 ID，请进入创作者中心后再检查状态。".to_string(),
         ));
     }
 
     Ok(PluginAccountInfo {
-        relay_platform_id: "xhs".to_string(),
         uid: account.clone(),
         account,
         nickname,
         avatar,
-        fans_count: first_count_from_values(&[creator_data, home_data], FOLLOWER_COUNT_KEYS),
+        fans_count: creator_fans_count
+            .or_else(|| first_count_from_values(&[user_data, edith_data], FOLLOWER_COUNT_KEYS)),
+        like_count: creator_like_count
+            .or_else(|| first_count_from_values(&[user_data, edith_data], LIKE_COUNT_KEYS)),
         login_cookie,
     })
 }
@@ -3183,6 +3077,13 @@ async fn collect_wx_sph_plugin_account(
         ));
     }
 
+    fetch_wx_channels_account_from_cookie(&cookie_header, login_cookie).await
+}
+
+async fn fetch_wx_channels_account_from_cookie(
+    cookie_header: &str,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, PluginAuthError> {
     let value = request_plugin_json(
         "POST",
         "https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data",
@@ -3262,7 +3163,6 @@ async fn collect_wx_sph_plugin_account(
     }
 
     Ok(PluginAccountInfo {
-        relay_platform_id: "wxSph".to_string(),
         uid: account.clone(),
         account,
         nickname,
@@ -3282,72 +3182,9 @@ async fn collect_wx_sph_plugin_account(
         .map(normalize_image_url)
         .unwrap_or_default(),
         fans_count: first_count(finder_user, FOLLOWER_COUNT_KEYS),
+        like_count: first_count(finder_user, LIKE_COUNT_KEYS),
         login_cookie,
     })
-}
-
-async fn sync_plugin_account_to_aitoearn(
-    app: &AppHandle,
-    user_id: &str,
-    relay: &RelaySettings,
-    relay_platform_id: &str,
-    account: PluginAccountInfo,
-) -> Result<ChannelAccount, PluginAuthError> {
-    let group_id = default_aitoearn_group_id(relay)
-        .await
-        .map_err(PluginAuthError::Failed)?
-        .unwrap_or_default();
-    let mut body = json!({
-        "type": account.relay_platform_id.clone(),
-        "uid": account.uid.clone(),
-        "account": account.account.clone(),
-        "nickname": account.nickname.clone(),
-        "loginCookie": account.login_cookie.clone(),
-    });
-    if !account.avatar.trim().is_empty() {
-        body["avatar"] = json!(account.avatar);
-    }
-    if let Some(fans_count) = account.fans_count {
-        body["fansCount"] = json!(fans_count);
-    }
-    if !group_id.trim().is_empty() {
-        body["groupId"] = json!(group_id);
-    }
-
-    let value = aitoearn_post_json(relay, "v2/channels/accounts", &body)
-        .await
-        .map_err(PluginAuthError::Failed)?;
-    ensure_aitoearn_success(&value).map_err(PluginAuthError::Failed)?;
-    let data = relay_response_data(&value);
-    let requested_uid = plugin_account_uid(&account);
-    let remote_account_ref = first_string(data, &["id", "accountId"]).filter(|ref_id| {
-        !relay_ref_belongs_to_different_uid(app, user_id, relay_platform_id, ref_id, &requested_uid)
-            .unwrap_or(false)
-    });
-    let fallback_account =
-        plugin_info_to_channel_account(relay_platform_id, &account, remote_account_ref.clone());
-    let synced = fetch_aitoearn_accounts(relay)
-        .await
-        .map_err(PluginAuthError::Failed)?;
-    let synced_account = synced
-        .iter()
-        .find(|item| {
-            aitoearn_platform_id(&item.platform_id) == Some(relay_platform_id)
-                && (account_uid_matches(&item.uid, &requested_uid)
-                    || (item.relay_account_ref.as_deref() == remote_account_ref.as_deref()
-                        && account_uid_matches(&item.uid, &requested_uid)))
-        })
-        .cloned()
-        .or_else(|| {
-            aitoearn_account_from_value(data)
-                .filter(|item| account_uid_matches(&item.uid, &requested_uid))
-        })
-        .unwrap_or(fallback_account);
-    let enriched = enrich_plugin_synced_account(synced_account, &account);
-    let enriched =
-        upsert_local_account(app, user_id, enriched.clone()).map_err(PluginAuthError::Failed)?;
-    upsert_account_secret(app, &enriched.id, &account.login_cookie).map_err(PluginAuthError::Failed)?;
-    Ok(enriched)
 }
 
 fn plugin_account_uid(account: &PluginAccountInfo) -> String {
@@ -3358,45 +3195,17 @@ fn plugin_account_uid(account: &PluginAccountInfo) -> String {
     }
 }
 
-fn account_uid_matches(left: &str, right: &str) -> bool {
-    let left = normalize_match_key(left);
-    let right = normalize_match_key(right);
-    !left.is_empty() && left == right
-}
-
-fn relay_ref_belongs_to_different_uid(
-    app: &AppHandle,
-    user_id: &str,
-    relay_platform_id: &str,
-    relay_account_ref: &str,
-    requested_uid: &str,
-) -> Result<bool, String> {
-    let runtime = app.state::<RuntimeState>();
-    let store = runtime.store.lock().map_err(lock_error)?;
-    let platform_id = normalize_platform_id(relay_platform_id);
-    Ok(store.accounts.iter().any(|account| {
-        account_belongs_to_user(account, user_id)
-            && normalize_platform_id(&account.platform_id) == platform_id
-            && (account.relay_account_ref.as_deref() == Some(relay_account_ref)
-                || account.id == relay_account_ref)
-            && !account_uid_matches(&account.uid, requested_uid)
-    }))
-}
-
 fn plugin_info_to_channel_account(
-    relay_platform_id: &str,
+    platform_id: &str,
     account: &PluginAccountInfo,
-    relay_account_ref: Option<String>,
 ) -> ChannelAccount {
-    let platform_id = normalize_platform_id(relay_platform_id);
+    let platform_id = normalize_platform_id(platform_id);
     let uid = plugin_account_uid(account);
-    let id = relay_account_ref.clone().unwrap_or_else(|| {
-        format!(
-            "{}_{}",
-            relay_platform_id,
-            stable_label_fragment(&format!("{platform_id}:{uid}:{}", account.nickname))
-        )
-    });
+    let id = format!(
+        "{}_{}",
+        platform_id,
+        stable_label_fragment(&format!("{platform_id}:{uid}:{}", account.nickname))
+    );
     let now = Utc::now();
     ChannelAccount {
         id,
@@ -3406,100 +3215,14 @@ fn plugin_info_to_channel_account(
         nickname: account.nickname.clone(),
         avatar: account.avatar.clone(),
         followers: account.fans_count,
+        likes: account.like_count,
         status: AccountStatus::Active,
-        relay_account_ref,
+        relay_account_ref: None,
         token: None,
         created_at: now,
         updated_at: now,
         last_sync_at: Some(now),
     }
-}
-
-fn collect_webview_cookies(
-    window: &WebviewWindow<tauri::Wry>,
-    urls: &[&str],
-) -> Result<(String, String), String> {
-    let mut cookies = Vec::new();
-    let mut seen = HashMap::new();
-    let mut hosts = Vec::new();
-    for url in urls {
-        let parsed = Url::parse(url).map_err(|error| format!("Cookie 地址无效: {error}"))?;
-        if let Some(host) = parsed.host_str() {
-            hosts.push(host.to_ascii_lowercase());
-        }
-        for cookie in window
-            .cookies_for_url(parsed.clone())
-            .map_err(|error| format!("读取授权窗口 Cookie 失败: {error}"))?
-        {
-            let name = cookie.name().to_string();
-            let value = cookie.value().to_string();
-            let domain = cookie.domain().unwrap_or_default().to_string();
-            let path = cookie.path().unwrap_or("/").to_string();
-            let key = format!("{domain}|{path}|{name}");
-            if seen.contains_key(&key) {
-                continue;
-            }
-            seen.insert(key, true);
-            cookies.push(json!({
-                "name": name,
-                "value": value,
-                "domain": domain,
-                "path": path,
-                "secure": cookie.secure().unwrap_or(false),
-                "httpOnly": cookie.http_only().unwrap_or(false),
-            }));
-        }
-    }
-    for cookie in window
-        .cookies()
-        .map_err(|error| format!("读取授权窗口全量 Cookie 失败: {error}"))?
-    {
-        let name = cookie.name().to_string();
-        let value = cookie.value().to_string();
-        let domain = cookie.domain().unwrap_or_default().to_string();
-        if !cookie_domain_matches_hosts(&domain, &hosts) {
-            continue;
-        }
-        let path = cookie.path().unwrap_or("/").to_string();
-        let key = format!("{domain}|{path}|{name}");
-        if seen.contains_key(&key) {
-            continue;
-        }
-        seen.insert(key, true);
-        cookies.push(json!({
-            "name": name,
-            "value": value,
-            "domain": domain,
-            "path": path,
-            "secure": cookie.secure().unwrap_or(false),
-            "httpOnly": cookie.http_only().unwrap_or(false),
-        }));
-    }
-    let header = cookies
-        .iter()
-        .filter_map(|cookie| {
-            Some(format!(
-                "{}={}",
-                cookie.get("name")?.as_str()?,
-                cookie.get("value")?.as_str()?
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let json = serde_json::to_string(&cookies).map_err(|error| error.to_string())?;
-    Ok((header, json))
-}
-
-fn cookie_domain_matches_hosts(domain: &str, hosts: &[String]) -> bool {
-    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
-    if domain.is_empty() {
-        return false;
-    }
-    hosts.iter().any(|host| {
-        host == &domain
-            || host.ends_with(&format!(".{domain}"))
-            || domain.ends_with(&format!(".{host}"))
-    })
 }
 
 async fn request_plugin_json(
@@ -3519,6 +3242,11 @@ async fn request_plugin_json(
         .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
         .header("Accept", "application/json, text/plain, */*")
         .timeout(std::time::Duration::from_secs(18));
+    if method.eq_ignore_ascii_case("POST") {
+        request = request
+            .header("Content-Type", "application/json;charset=utf-8")
+            .body("{}");
+    }
     for (key, value) in headers {
         request = request.header(*key, *value);
     }
@@ -3543,20 +3271,15 @@ fn response_success(value: &Value) -> bool {
         .unwrap_or_else(|| first_i64(value, &["code", "errCode", "errcode"]).unwrap_or(0) == 0)
 }
 
-fn first_string_from_values(values: &[Option<&Value>], keys: &[&str]) -> Option<String> {
-    values.iter().find_map(|value| value.and_then(|value| first_string(value, keys)))
+fn xhs_response_payload(value: &Value) -> Option<&Value> {
+    value
+        .get("data")
+        .filter(|data| !data.is_null())
+        .or(Some(value))
 }
 
 fn first_count_from_values(values: &[Option<&Value>], keys: &[&str]) -> Option<u64> {
     values.iter().find_map(|value| value.and_then(|value| first_count(value, keys)))
-}
-
-fn first_profile_image_from_values(values: &[Option<&Value>], keys: &[&str]) -> Option<String> {
-    values
-        .iter()
-        .find_map(|value| value.and_then(|value| first_profile_image(value, keys)))
-        .map(normalize_image_url)
-        .filter(|value| !value.trim().is_empty())
 }
 
 fn first_profile_image(value: &Value, keys: &[&str]) -> Option<String> {
@@ -3599,10 +3322,10 @@ fn string_from_image_value(value: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn should_materialize_avatar(platform_id: &str, value: &str) -> bool {
-    matches!(
-        normalize_platform_id(platform_id).as_str(),
-        "xiaohongshu" | "bilibili" | "kuaishou"
-    ) && !value.trim().is_empty()
+    channels::platform(platform_id)
+        .map(|platform| platform.materialize_avatar)
+        .unwrap_or(false)
+        && !value.trim().is_empty()
         && !value.trim_start().starts_with("data:image")
 }
 
@@ -3631,18 +3354,13 @@ async fn fetch_avatar_data_url(platform_id: &str, url: &str) -> Result<String, S
         .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
         .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
         .timeout(std::time::Duration::from_secs(15));
-    if normalize_platform_id(platform_id) == "xiaohongshu" {
-        request = request
-            .header("Referer", "https://creator.xiaohongshu.com/")
-            .header("Origin", "https://creator.xiaohongshu.com");
-    } else if normalize_platform_id(platform_id) == "bilibili" {
-        request = request
-            .header("Referer", "https://www.bilibili.com/")
-            .header("Origin", "https://www.bilibili.com");
-    } else if normalize_platform_id(platform_id) == "kuaishou" {
-        request = request
-            .header("Referer", "https://www.kuaishou.com/")
-            .header("Origin", "https://www.kuaishou.com");
+    if let Some(platform) = channels::platform(platform_id) {
+        if let Some(referer) = platform.avatar_referer {
+            request = request.header("Referer", referer);
+        }
+        if let Some(origin) = platform.avatar_origin {
+            request = request.header("Origin", origin);
+        }
     }
 
     let response = request
@@ -3720,266 +3438,6 @@ fn normalize_image_url(value: String) -> String {
     } else {
         value
     }
-}
-
-async fn default_aitoearn_group_id(relay: &RelaySettings) -> Result<Option<String>, String> {
-    let value = aitoearn_get(relay, "v2/channels/account-groups", &[]).await?;
-    ensure_aitoearn_success(&value)?;
-    let data = relay_response_data(&value);
-    let Some(groups) = data.as_array() else {
-        return Ok(None);
-    };
-    let default_group = groups
-        .iter()
-        .find(|item| item.get("isDefault").and_then(Value::as_bool) == Some(true))
-        .or_else(|| groups.first());
-    Ok(default_group.and_then(|item| first_string(item, &["id"])))
-}
-
-async fn aitoearn_get(
-    relay: &RelaySettings,
-    path: &str,
-    params: &[(&str, &str)],
-) -> Result<Value, String> {
-    let mut url = relay_url(relay, path)?;
-    for (key, value) in params {
-        url.query_pairs_mut().append_pair(key, value);
-    }
-    aitoearn_request(Client::new().get(url), relay).await
-}
-
-async fn aitoearn_post_json(
-    relay: &RelaySettings,
-    path: &str,
-    body: &Value,
-) -> Result<Value, String> {
-    let url = relay_url(relay, path)?;
-    aitoearn_request(Client::new().post(url).json(body), relay).await
-}
-
-async fn aitoearn_delete(relay: &RelaySettings, path: &str) -> Result<Value, String> {
-    let url = relay_url(relay, path)?;
-    aitoearn_request(Client::new().delete(url), relay).await
-}
-
-async fn aitoearn_request(
-    request: reqwest::RequestBuilder,
-    relay: &RelaySettings,
-) -> Result<Value, String> {
-    let response = request
-        .header("x-api-key", relay.api_key.trim())
-        .header("Accept-Language", "zh-CN")
-        .timeout(std::time::Duration::from_secs(18))
-        .send()
-        .await
-        .map_err(|error| format!("请求 AiToEarn 授权服务失败: {error}"))?;
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("AiToEarn 返回不是 JSON: {error}"))?;
-    if !status.is_success() {
-        return Err(format!("AiToEarn 返回 HTTP {status}: {}", relay_error_message(&value)));
-    }
-    Ok(value)
-}
-
-fn relay_url(relay: &RelaySettings, path: &str) -> Result<Url, String> {
-    let base = relay.server_url.trim().trim_end_matches('/');
-    let path = path.trim().trim_start_matches('/');
-    Url::parse(&format!("{base}/{path}")).map_err(|error| format!("AiToEarn 地址无效: {error}"))
-}
-
-fn ensure_aitoearn_success(value: &Value) -> Result<(), String> {
-    if let Some(code) = value.get("code").and_then(Value::as_i64) {
-        if code != 0 {
-            return Err(match code {
-                401 | 403 => "AiToEarn API Key 认证失败".to_string(),
-                _ => relay_error_message(value),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn relay_response_data(value: &Value) -> &Value {
-    value.get("data").unwrap_or(value)
-}
-
-fn aitoearn_account_from_value(value: &Value) -> Option<ChannelAccount> {
-    let remote_platform = first_string(value, &["type", "platform"])?;
-    let platform_id = normalize_platform_id(&remote_platform);
-    let id = first_string(value, &["id", "accountId"]).unwrap_or_else(|| Uuid::new_v4().to_string());
-    let uid = first_string(value, &["uid", "platformUid", "platform_uid"]).unwrap_or_else(|| id.clone());
-    let nickname = first_string(value, &["nickname", "name", "displayName"])
-        .unwrap_or_else(|| platform_name(&platform_id).to_string());
-    let avatar = first_profile_image(
-        value,
-        &[
-            "avatar",
-            "avatarUrl",
-            "avatar_url",
-            "headImg",
-            "headImgUrl",
-            "head_img",
-            "profileImageUrl",
-            "profile_image_url",
-            "image",
-            "imageUrl",
-            "image_url",
-        ],
-    )
-    .map(normalize_image_url)
-    .unwrap_or_default();
-    let followers = first_count(value, FOLLOWER_COUNT_KEYS);
-    let status = match value.get("status").and_then(Value::as_i64) {
-        Some(1) | None => AccountStatus::Active,
-        Some(_) => AccountStatus::Expired,
-    };
-    let created_at = first_string(value, &["createdAt", "created_at"])
-        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now);
-    let updated_at = first_string(value, &["updatedAt", "updated_at"])
-        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now);
-    let last_sync_at = first_string(value, &["lastStatsTime", "lastSyncAt", "updatedAt"])
-        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .or(Some(updated_at));
-
-    Some(ChannelAccount {
-        id: id.clone(),
-        user_id: None,
-        platform_id,
-        uid,
-        nickname,
-        avatar,
-        followers,
-        status,
-        relay_account_ref: Some(id),
-        token: None,
-        created_at,
-        updated_at,
-        last_sync_at,
-    })
-}
-
-fn enrich_plugin_synced_account(mut synced: ChannelAccount, account: &PluginAccountInfo) -> ChannelAccount {
-    if !account.nickname.trim().is_empty() {
-        synced.nickname = account.nickname.clone();
-    }
-    if !account.avatar.trim().is_empty() {
-        synced.avatar = account.avatar.clone();
-    }
-    if let Some(fans_count) = account.fans_count {
-        synced.followers = Some(fans_count);
-    }
-    if synced.uid.trim().is_empty() {
-        synced.uid = account.uid.clone();
-    }
-    synced.updated_at = Utc::now();
-    synced.last_sync_at = Some(Utc::now());
-    synced
-}
-
-fn upsert_local_account(
-    app: &AppHandle,
-    user_id: &str,
-    account: ChannelAccount,
-) -> Result<ChannelAccount, String> {
-    let runtime = app.state::<RuntimeState>();
-    let mut store = runtime.store.lock().map_err(lock_error)?;
-    let mut source_secret_keys = account_secret_candidates(&account);
-    let mut account = scoped_account_for_user(user_id, account);
-    for key in account_secret_candidates(&account) {
-        push_unique(&mut source_secret_keys, key);
-    }
-    if let Some(existing) = store.accounts.iter_mut().find(|item| {
-        account_belongs_to_user(item, user_id)
-            && item.platform_id == account.platform_id
-            && (item.uid == account.uid || item.relay_account_ref == account.relay_account_ref)
-    }) {
-        account.id = existing.id.clone();
-        *existing = ChannelAccount {
-            token: existing.token.clone(),
-            created_at: existing.created_at.min(account.created_at),
-            ..account.clone()
-        };
-    } else {
-        store.accounts.push(account.clone());
-    }
-    migrate_account_secret_from_keys(&mut store, &account.id, &source_secret_keys);
-    persist_store(app, &store)?;
-    Ok(account)
-}
-
-fn upsert_account_secret(app: &AppHandle, account_id: &str, login_cookie: &str) -> Result<(), String> {
-    if login_cookie.trim().is_empty() {
-        return Ok(());
-    }
-    let runtime = app.state::<RuntimeState>();
-    let mut store = runtime.store.lock().map_err(lock_error)?;
-    let secret = store.account_secrets.entry(account_id.to_string()).or_default();
-    secret.login_cookie = Some(login_cookie.to_string());
-    persist_store(app, &store)
-}
-
-fn upsert_account_webview_session(
-    app: &AppHandle,
-    account_id: &str,
-    webview_session_id: &str,
-) -> Result<(), String> {
-    if webview_session_id.trim().is_empty() {
-        return Ok(());
-    }
-    let runtime = app.state::<RuntimeState>();
-    let mut store = runtime.store.lock().map_err(lock_error)?;
-    let secret = store.account_secrets.entry(account_id.to_string()).or_default();
-    secret.webview_session_id = Some(webview_session_id.to_string());
-    persist_store(app, &store)
-}
-
-fn find_synced_auth_account(
-    accounts: &[ChannelAccount],
-    _platform_id: &str,
-    status: &Value,
-) -> Option<ChannelAccount> {
-    let mut ids = Vec::new();
-    if let Some(id) = first_string(status, &["accountId", "id"]) {
-        ids.push(id);
-    }
-    if let Some(values) = status.get("accountIds").and_then(Value::as_array) {
-        ids.extend(values.iter().filter_map(Value::as_str).map(ToString::to_string));
-    }
-    if let Some(values) = status.get("accounts").and_then(Value::as_array) {
-        for item in values {
-            if let Some(id) = first_string(item, &["accountId", "id"]) {
-                ids.push(id);
-            }
-        }
-    }
-    if !ids.is_empty() {
-        return accounts
-            .iter()
-            .find(|item| {
-                ids.iter().any(|id| {
-                    item.id == *id || item.relay_account_ref.as_deref() == Some(id.as_str())
-                })
-            })
-            .cloned();
-    }
-    None
-}
-
-fn relay_error_message(value: &Value) -> String {
-    value
-        .get("message")
-        .and_then(Value::as_str)
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or("授权服务暂时不可用，请稍后再试")
-        .to_string()
 }
 
 fn create_direct_oauth_url(
@@ -4072,7 +3530,6 @@ async fn handle_callback_connection(app: AppHandle, mut stream: TcpStream) -> Re
     let raw = String::from_utf8_lossy(&buffer[..size]).to_string();
     let request = parse_http_request(&raw)?;
     let result = match request.path.as_str() {
-        path if path.starts_with("/relay-callback") => finish_relay_callback(&app, &request).await,
         path if path.starts_with("/oauth-callback") => finish_oauth_callback(&app, &request).await,
         _ => Err("未知回调路径".to_string()),
     };
@@ -4091,108 +3548,6 @@ async fn handle_callback_connection(app: AppHandle, mut stream: TcpStream) -> Re
         .await
         .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-async fn finish_relay_callback(
-    app: &AppHandle,
-    request: &HttpRequest,
-) -> Result<ChannelAccount, String> {
-    let mut params = parse_body_params(request);
-    params.extend(request.query.clone());
-    let task_id = params
-        .get("taskId")
-        .cloned()
-        .or_else(|| params.get("task_id").cloned())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let platform_id = params
-        .get("platform")
-        .cloned()
-        .or_else(|| params.get("accountType").cloned())
-        .or_else(|| params.get("account_type").cloned())
-        .unwrap_or_else(|| "unknown".to_string());
-    let platform_id = normalize_platform_id(&platform_id);
-    let uid = params
-        .get("platformUid")
-        .cloned()
-        .or_else(|| params.get("platform_uid").cloned())
-        .or_else(|| params.get("uid").cloned())
-        .unwrap_or_else(|| task_id.clone());
-    let nickname = params
-        .get("nickname")
-        .cloned()
-        .or_else(|| params.get("name").cloned())
-        .unwrap_or_else(|| platform_name(&platform_id).to_string());
-    let avatar = params.get("avatar").cloned().unwrap_or_default();
-    let relay_account_ref = Some(task_id.clone());
-    let user_id = app
-        .state::<RuntimeState>()
-        .pending_auth
-        .lock()
-        .map_err(lock_error)?
-        .get(&task_id)
-        .map(|task| task.user_id.clone())
-        .ok_or_else(|| "授权任务不存在或已过期".to_string())?;
-
-    if platform_id == "douyin" {
-        let account = ChannelAccount {
-            id: Uuid::new_v4().to_string(),
-            user_id: None,
-            platform_id,
-            uid,
-            nickname,
-            avatar,
-            followers: None,
-            status: AccountStatus::Active,
-            relay_account_ref,
-            token: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_sync_at: Some(Utc::now()),
-        };
-        let task = app
-            .state::<RuntimeState>()
-            .pending_auth
-            .lock()
-            .map_err(lock_error)?
-            .get(&task_id)
-            .cloned();
-        if let Some(task) = task {
-            close_auth_window_by_label(app, task.relay_window_label.as_deref());
-        }
-        let cookie_window_label = open_douyin_cookie_binding_window(app, &task_id, &account, None)?;
-        {
-            let state = app.state::<RuntimeState>();
-            let mut pending = state.pending_auth.lock().map_err(lock_error)?;
-            if let Some(existing) = pending.get_mut(&task_id) {
-                existing.relay_session_id = None;
-                existing.relay_window_label = None;
-                existing.douyin_cookie_account = Some(account.clone());
-                existing.douyin_cookie_window_label = Some(cookie_window_label);
-                existing.douyin_cookie_window_opened_at = Some(Utc::now());
-            }
-        }
-        return Ok(account);
-    }
-
-    upsert_account_for_user(
-        app,
-        &user_id,
-        ChannelAccount {
-            id: Uuid::new_v4().to_string(),
-            user_id: None,
-            platform_id,
-            uid,
-            nickname,
-            avatar,
-            followers: None,
-            status: AccountStatus::Active,
-            relay_account_ref,
-            token: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_sync_at: Some(Utc::now()),
-        },
-    )
 }
 
 async fn finish_oauth_callback(
@@ -4247,6 +3602,7 @@ async fn finish_oauth_callback(
     )
     .unwrap_or_default();
     let followers = first_count(&profile, FOLLOWER_COUNT_KEYS);
+    let likes = first_count(&profile, LIKE_COUNT_KEYS);
 
     upsert_account_for_user(
         app,
@@ -4259,6 +3615,7 @@ async fn finish_oauth_callback(
             nickname,
             avatar,
             followers,
+            likes,
             status: AccountStatus::Active,
             relay_account_ref: None,
             token: Some(token),
@@ -4326,523 +3683,4 @@ async fn fetch_oauth_profile(
         .json()
         .await
         .map_err(|error| format!("用户资料响应不是 JSON: {error}"))
-}
-
-fn upsert_account_for_user(
-    app: &AppHandle,
-    user_id: &str,
-    account: ChannelAccount,
-) -> Result<ChannelAccount, String> {
-    let user_id = normalize_user_id(user_id)?;
-    let runtime = app.state::<RuntimeState>();
-    let mut store = runtime.store.lock().map_err(lock_error)?;
-    let mut source_secret_keys = account_secret_candidates(&account);
-    let mut account = scoped_account_for_user(&user_id, account);
-    for key in account_secret_candidates(&account) {
-        push_unique(&mut source_secret_keys, key);
-    }
-    if let Some(existing) = store
-        .accounts
-        .iter_mut()
-        .find(|item| {
-            account_belongs_to_user(item, &user_id)
-                && item.platform_id == account.platform_id
-                && (item.uid == account.uid || item.relay_account_ref == account.relay_account_ref)
-        })
-    {
-        account.id = existing.id.clone();
-        account.created_at = existing.created_at;
-        *existing = account.clone();
-    } else {
-        store.accounts.push(account.clone());
-    }
-    migrate_account_secret_from_keys(&mut store, &account.id, &source_secret_keys);
-    let completed_task_id = account.relay_account_ref.clone();
-    runtime
-        .pending_auth
-        .lock()
-        .map_err(lock_error)?
-        .retain(|task_id, task| {
-            task.user_id != user_id
-                || (completed_task_id.as_deref() != Some(task_id.as_str())
-                    && !(completed_task_id.is_none() && task.platform_id == account.platform_id))
-        });
-    persist_store(app, &store)?;
-    Ok(account)
-}
-
-#[derive(Debug)]
-struct HttpRequest {
-    path: String,
-    query: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: String,
-}
-
-fn parse_http_request(raw: &str) -> Result<HttpRequest, String> {
-    let (head, body) = raw
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "HTTP 请求格式无效".to_string())?;
-    let mut lines = head.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "HTTP 请求缺少请求行".to_string())?;
-    let mut request_parts = request_line.split_whitespace();
-    let _method = request_parts.next().unwrap_or_default();
-    let target = request_parts.next().unwrap_or("/");
-    let mut target_parts = target.splitn(2, '?');
-    let path = target_parts.next().unwrap_or("/").to_string();
-    let query = target_parts
-        .next()
-        .map(parse_query)
-        .unwrap_or_else(HashMap::new);
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-    Ok(HttpRequest {
-        path,
-        query,
-        headers,
-        body: body.to_string(),
-    })
-}
-
-fn parse_body_params(request: &HttpRequest) -> HashMap<String, String> {
-    let content_type = request
-        .headers
-        .get("content-type")
-        .map(String::as_str)
-        .unwrap_or_default();
-    if content_type.contains("application/json") {
-        if let Ok(value) = serde_json::from_str::<Value>(&request.body) {
-            return flatten_json_object(&value);
-        }
-    }
-    parse_query(&request.body)
-}
-
-fn parse_query(value: &str) -> HashMap<String, String> {
-    form_urlencoded::parse(value.as_bytes())
-        .into_owned()
-        .collect::<HashMap<String, String>>()
-}
-
-fn flatten_json_object(value: &Value) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    if let Some(object) = value.as_object() {
-        for (key, value) in object {
-            if let Some(text) = value.as_str() {
-                map.insert(key.clone(), text.to_string());
-            } else if value.is_number() || value.is_boolean() {
-                map.insert(key.clone(), value.to_string());
-            }
-        }
-    }
-    map
-}
-
-fn load_store(app: &AppHandle) -> Result<StoreFile, Box<dyn std::error::Error>> {
-    let path = store_path(app)?;
-    if !path.exists() {
-        return Ok(StoreFile {
-            accounts: Vec::new(),
-            settings: default_auth_settings(),
-            account_secrets: HashMap::new(),
-        });
-    }
-    let text = fs::read_to_string(path)?;
-    let mut store: StoreFile = serde_json::from_str(&text)?;
-    store.settings = normalize_settings(store.settings);
-    Ok(store)
-}
-
-fn persist_store(app: &AppHandle, store: &StoreFile) -> Result<(), String> {
-    let path = store_path(app).map_err(|error| error.to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let text = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
-    fs::write(path, text).map_err(|error| error.to_string())
-}
-
-fn store_path(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let dir = app.path().app_data_dir()?;
-    Ok(dir.join("channel-auth-store.json"))
-}
-
-fn normalize_settings(_settings: AuthSettings) -> AuthSettings {
-    default_auth_settings()
-}
-
-fn default_auth_settings() -> AuthSettings {
-    AuthSettings {
-        relay: RelaySettings {
-            enabled: true,
-            server_url: RELAY_SERVER_URL.to_string(),
-            api_key: RELAY_API_KEY.to_string(),
-        },
-        platforms: vec![
-            platform_auth("xiaohongshu", "plat/xhs/auth/url/pc", HttpMethod::GET),
-            platform_auth("wechat-channels", "plat/wxSph/auth/url/pc", HttpMethod::GET),
-            platform_auth("douyin", "plat/douyin/auth/url", HttpMethod::GET),
-            platform_auth("bilibili", "plat/bilibili/auth/url/pc", HttpMethod::GET),
-            platform_auth("kuaishou", "plat/kwai/auth/url/pc", HttpMethod::GET),
-        ],
-    }
-}
-
-fn platform_auth(
-    platform_id: &str,
-    relay_path: &str,
-    relay_method: HttpMethod,
-) -> PlatformAuthSettings {
-    PlatformAuthSettings {
-        platform_id: platform_id.to_string(),
-        mode: AuthMode::Relay,
-        relay_path: relay_path.to_string(),
-        relay_method,
-        auth_url: String::new(),
-        token_url: String::new(),
-        profile_url: String::new(),
-        client_id: String::new(),
-        client_secret: String::new(),
-        scopes: Vec::new(),
-    }
-}
-
-fn default_platforms() -> Vec<PlatformInfo> {
-    vec![
-        PlatformInfo {
-            id: "xiaohongshu".to_string(),
-            name: "小红书".to_string(),
-            slug: "XHS".to_string(),
-            color: "#ff2442".to_string(),
-            description: "添加并管理多个小红书账号。".to_string(),
-            supports_builtin_oauth: true,
-        },
-        PlatformInfo {
-            id: "wechat-channels".to_string(),
-            name: "视频号".to_string(),
-            slug: "WX".to_string(),
-            color: "#ff9f2e".to_string(),
-            description: "添加并管理多个微信视频号账号。".to_string(),
-            supports_builtin_oauth: true,
-        },
-        PlatformInfo {
-            id: "douyin".to_string(),
-            name: "抖音".to_string(),
-            slug: "DY".to_string(),
-            color: "#111111".to_string(),
-            description: "添加并管理多个抖音账号。".to_string(),
-            supports_builtin_oauth: true,
-        },
-        PlatformInfo {
-            id: "bilibili".to_string(),
-            name: "哔哩哔哩".to_string(),
-            slug: "BILI".to_string(),
-            color: "#00a1d6".to_string(),
-            description: "添加并管理多个 B 站账号。".to_string(),
-            supports_builtin_oauth: true,
-        },
-        PlatformInfo {
-            id: "kuaishou".to_string(),
-            name: "快手".to_string(),
-            slug: "KS".to_string(),
-            color: "#ff4906".to_string(),
-            description: "添加并管理多个快手账号。".to_string(),
-            supports_builtin_oauth: true,
-        },
-    ]
-}
-
-fn platform_name(platform_id: &str) -> &'static str {
-    match platform_id {
-        "xiaohongshu" | "xhs" => "小红书",
-        "wechat-channels" | "wxSph" | "wxsph" => "视频号",
-        "douyin" => "抖音",
-        "bilibili" => "哔哩哔哩",
-        "kuaishou" | "kwai" | "KWAI" => "快手",
-        _ => "渠道账号",
-    }
-}
-
-fn normalize_platform_id(value: &str) -> String {
-    match value {
-        "xhs" | "Xhs" | "XHS" => "xiaohongshu".to_string(),
-        "wxSph" | "wxsph" | "wechat" => "wechat-channels".to_string(),
-        "kwai" | "KWAI" | "Kwai" => "kuaishou".to_string(),
-        "BILIBILI" => "bilibili".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn normalize_user_id(value: &str) -> Result<String, String> {
-    let user_id = value.trim();
-    if user_id.is_empty() {
-        return Err("当前登录状态无效，请重新登录".to_string());
-    }
-    Ok(user_id.to_string())
-}
-
-fn account_belongs_to_user(account: &ChannelAccount, user_id: &str) -> bool {
-    account.user_id.as_deref() == Some(user_id)
-}
-
-fn user_accounts(store: &StoreFile, user_id: &str) -> Vec<ChannelAccount> {
-    store
-        .accounts
-        .iter()
-        .filter(|account| account_belongs_to_user(account, user_id))
-        .cloned()
-        .collect()
-}
-
-fn account_secret_for_account(store: &StoreFile, account: &ChannelAccount) -> Option<AccountSecret> {
-    account_secret_candidates(account)
-        .into_iter()
-        .find_map(|key| store.account_secrets.get(&key).cloned())
-}
-
-fn migrate_account_secret_for_account(store: &mut StoreFile, account: &ChannelAccount) -> bool {
-    let keys = account_secret_candidates(account);
-    migrate_account_secret_from_keys(store, &account.id, &keys)
-}
-
-fn migrate_account_secret_from_keys(
-    store: &mut StoreFile,
-    target_id: &str,
-    source_keys: &[String],
-) -> bool {
-    let mut changed = false;
-    for key in source_keys {
-        if key == target_id {
-            continue;
-        }
-        let Some(source) = store.account_secrets.get(key).cloned() else {
-            continue;
-        };
-        let target = store.account_secrets.entry(target_id.to_string()).or_default();
-        if target.login_cookie.is_none() && source.login_cookie.is_some() {
-            target.login_cookie = source.login_cookie.clone();
-            changed = true;
-        }
-        if target.webview_session_id.is_none() && source.webview_session_id.is_some() {
-            target.webview_session_id = source.webview_session_id.clone();
-            changed = true;
-        }
-    }
-    changed
-}
-
-fn account_secret_candidates(account: &ChannelAccount) -> Vec<String> {
-    let mut values = Vec::new();
-    push_unique(&mut values, account.id.clone());
-    if let Some(user_id) = account.user_id.as_deref() {
-        if let Some(raw_id) = unscoped_account_id(user_id, &account.id) {
-            push_unique(&mut values, raw_id);
-        }
-    }
-    if let Some(relay_account_ref) = account.relay_account_ref.as_ref() {
-        push_unique(&mut values, relay_account_ref.clone());
-        if let Some(user_id) = account.user_id.as_deref() {
-            push_unique(&mut values, scoped_account_id(user_id, relay_account_ref));
-        }
-    }
-    values
-}
-
-fn push_unique(values: &mut Vec<String>, value: String) {
-    if !value.trim().is_empty() && !values.iter().any(|item| item == &value) {
-        values.push(value);
-    }
-}
-
-fn scoped_account_for_user(user_id: &str, mut account: ChannelAccount) -> ChannelAccount {
-    account.user_id = Some(user_id.to_string());
-    account.id = scoped_account_id(user_id, &account.id);
-    account
-}
-
-fn scoped_account_id(user_id: &str, account_id: &str) -> String {
-    let prefix = format!("u{}_", stable_label_fragment(user_id));
-    if account_id.starts_with(&prefix) {
-        account_id.to_string()
-    } else {
-        format!("{prefix}{account_id}")
-    }
-}
-
-fn unscoped_account_id(user_id: &str, account_id: &str) -> Option<String> {
-    let prefix = format!("u{}_", stable_label_fragment(user_id));
-    account_id
-        .strip_prefix(&prefix)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-}
-
-fn aitoearn_platform_id(platform_id: &str) -> Option<&'static str> {
-    match platform_id {
-        "xiaohongshu" | "xhs" => Some("xhs"),
-        "wechat-channels" | "wxSph" | "wxsph" => Some("wxSph"),
-        "douyin" => Some("douyin"),
-        "bilibili" => Some("bilibili"),
-        "kuaishou" | "kwai" | "KWAI" => Some("KWAI"),
-        _ => None,
-    }
-}
-
-fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        value
-            .get(*key)
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-    })
-}
-
-fn first_string_deep(value: &Value, keys: &[&str]) -> Option<String> {
-    if let Some(value) = first_string(value, keys).filter(|value| !value.trim().is_empty()) {
-        return Some(value);
-    }
-    match value {
-        Value::Array(items) => items
-            .iter()
-            .find_map(|item| first_string_deep(item, keys)),
-        Value::Object(map) => map
-            .values()
-            .find_map(|value| first_string_deep(value, keys)),
-        _ => None,
-    }
-}
-
-fn first_count(value: &Value, keys: &[&str]) -> Option<u64> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(count) = map.get(*key).and_then(|value| parse_count_value(value, keys)) {
-                    return Some(count);
-                }
-            }
-            map.values().find_map(|value| first_count(value, keys))
-        }
-        Value::Array(items) => items.iter().find_map(|value| first_count(value, keys)),
-        _ => None,
-    }
-}
-
-fn parse_count_value(value: &Value, keys: &[&str]) -> Option<u64> {
-    match value {
-        Value::Number(number) => number.as_u64().or_else(|| {
-            number
-                .as_f64()
-                .filter(|value| value.is_finite() && *value >= 0.0)
-                .map(|value| value.round() as u64)
-        }),
-        Value::String(text) => parse_count_string(text),
-        Value::Object(_) | Value::Array(_) => first_count(value, keys),
-        _ => None,
-    }
-}
-
-fn parse_count_string(text: &str) -> Option<u64> {
-    let compact: String = text
-        .trim()
-        .chars()
-        .filter(|ch| !matches!(ch, ',' | '，' | ' ' | '\u{00a0}'))
-        .collect();
-    if compact.is_empty() {
-        return None;
-    }
-
-    let lower = compact.to_ascii_lowercase();
-    let multiplier = if compact.contains('亿') {
-        100_000_000.0
-    } else if compact.contains('万') || lower.contains('w') {
-        10_000.0
-    } else if lower.contains('k') {
-        1_000.0
-    } else {
-        1.0
-    };
-
-    let mut numeric = String::new();
-    let mut started = false;
-    let mut saw_dot = false;
-    for ch in lower.chars() {
-        if ch.is_ascii_digit() {
-            numeric.push(ch);
-            started = true;
-        } else if ch == '.' && !saw_dot {
-            numeric.push(ch);
-            saw_dot = true;
-            started = true;
-        } else if started {
-            break;
-        }
-    }
-
-    let value = numeric.parse::<f64>().ok()?;
-    if !value.is_finite() || value < 0.0 {
-        return None;
-    }
-    Some((value * multiplier).round() as u64)
-}
-
-fn first_i64(value: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter().find_map(|key| value.get(*key).and_then(Value::as_i64))
-}
-
-fn encode_query(value: &str) -> String {
-    form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
-
-fn encode_path_segment(value: &str) -> String {
-    form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
-
-fn open_external_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    };
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("打开授权窗口失败: {error}"))
-}
-
-fn success_page(nickname: &str) -> String {
-    format!(
-        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>授权成功</title><body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#07181b;color:#dff7ef;display:grid;place-items:center;min-height:100vh"><main style="text-align:center"><h1>授权成功</h1><p>{nickname} 已连接到营销大师。</p><p style="color:#7f969d">可以关闭这个窗口并回到客户端。</p></main></body></html>"#
-    )
-}
-
-fn error_page(message: &str) -> String {
-    format!(
-        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>授权失败</title><body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#07181b;color:#ffe3e5;display:grid;place-items:center;min-height:100vh"><main style="max-width:560px;text-align:center"><h1>授权没有完成</h1><p>{message}</p><p style="color:#7f969d">请回到客户端查看授权状态。</p></main></body></html>"#
-    )
-}
-
-fn lock_error<T>(error: std::sync::PoisonError<T>) -> String {
-    format!("内部状态锁定失败: {error}")
 }

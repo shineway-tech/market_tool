@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "market_tool",
-  "version": "1.0.1",
+  "productName": "Channel Nest",
+  "version": "1.0.2",
   "identifier": "com.marketingmaster.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "market_tool",
+        "title": "Channel Nest",
         "width": 1280,
         "height": 820,
         "minWidth": 1040,

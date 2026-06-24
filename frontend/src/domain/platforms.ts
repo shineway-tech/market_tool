@@ -14,7 +14,7 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "XHS",
     color: "#ff2442",
     description: "添加并管理多个小红书账号。",
-    supportsBuiltinOauth: true,
+    supportsBuiltinOauth: false,
   },
   {
     id: "wechat-channels",

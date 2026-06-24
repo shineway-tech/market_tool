@@ -24,7 +24,7 @@ release/
 *.AppImage
 
 # Backend generated update packages
-backend/marketing-master-api/public/desktop-updates/
+backend/channel_nest_api/public/desktop-updates/
 
 # Logs and runtime state
 logs/
@@ -41,10 +41,10 @@ pnpm-debug.log*
 !.env.example
 .secret/
 .secrets/
-backend/marketing-master-api/.npmrc
-backend/marketing-master-api/config/config.json
-backend/marketing-master-api/config/config.prod.json
-backend/marketing-master-api/config/config.test.json
+backend/channel_nest_api/.npmrc
+backend/channel_nest_api/config/config.json
+backend/channel_nest_api/config/config.prod.json
+backend/channel_nest_api/config/config.test.json
 
 # OS / editor noise
 .DS_Store

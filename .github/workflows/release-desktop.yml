@@ -45,8 +45,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
-            --title "Marketing Master $GITHUB_REF_NAME" \
-            --notes "Desktop release for Marketing Master."
+            --title "Channel Nest $GITHUB_REF_NAME" \
+            --notes "Desktop release for Channel Nest."
 
   build-macos:
     name: Build ${{ matrix.name }}
@@ -74,7 +74,7 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -87,10 +87,10 @@ jobs:
           workspaces: ./src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm --prefix frontend ci
 
       - name: Build frontend
-        run: npm run build
+        run: npm --prefix frontend run build
 
       - name: Import Apple Developer ID certificate
         env:
@@ -159,7 +159,6 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          MARKETING_MASTER_RELAY_API_KEY: ${{ secrets.MARKETING_MASTER_RELAY_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
@@ -171,7 +170,7 @@ jobs:
               echo "Apple services network preflight failed; continuing so the build can retry notarization normally."
             fi
 
-            if npm run tauri -- build --verbose ${{ matrix.args }}; then
+            if npm --prefix frontend run tauri -- build --verbose ${{ matrix.args }}; then
               exit 0
             fi
 
@@ -189,7 +188,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          app_version="$(node -p "require('./package.json').version")"
+          app_version="$(node -p "require('./frontend/package.json').version")"
           arch="${{ matrix.artifact_arch }}"
           bundle_dir="src-tauri/target/${{ matrix.rust-target }}/release/bundle"
           output_dir="release-macos"
@@ -205,18 +204,18 @@ jobs:
             exit 1
           fi
 
-          cp "$dmg_file" "$output_dir/market_tool_${app_version}_macos_${arch}.dmg"
-          cp "$app_tar_file" "$output_dir/market_tool_${app_version}_macos_${arch}.app.tar.gz"
-          cp "$app_sig_file" "$output_dir/market_tool_${app_version}_macos_${arch}.app.tar.gz.sig"
+          cp "$dmg_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.dmg"
+          cp "$app_tar_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz"
+          cp "$app_sig_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz.sig"
 
       - name: Upload macOS release assets
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Marketing Master ${{ github.ref_name }}
+          name: Channel Nest ${{ github.ref_name }}
           body: |
-            Desktop release for Marketing Master.
+            Desktop release for Channel Nest.
 
             Built targets:
             - macOS Intel
@@ -242,7 +241,7 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -255,33 +254,32 @@ jobs:
           workspaces: ./src-tauri -> target
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm --prefix frontend ci
 
       - name: Build frontend
-        run: npm run build
+        run: npm --prefix frontend run build
 
       - name: Build Windows portable app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          MARKETING_MASTER_RELAY_API_KEY: ${{ secrets.MARKETING_MASTER_RELAY_API_KEY }}
-        run: npm run tauri -- build --no-bundle --verbose
+        run: npm --prefix frontend run tauri -- build --no-bundle --verbose
 
       - name: Prepare Windows portable exe
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path release-portable | Out-Null
-          $appVersion = (Get-Content "package.json" | ConvertFrom-Json).version
-          Copy-Item "src-tauri/target/release/marketing-master.exe" "release-portable/market_tool_${appVersion}_windows_x64_portable.exe" -Force
+          $appVersion = (Get-Content "frontend/package.json" | ConvertFrom-Json).version
+          Copy-Item "src-tauri/target/release/channel-nest.exe" "release-portable/Channel_Nest_${appVersion}_windows_x64_portable.exe" -Force
 
       - name: Upload Windows portable exe release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Marketing Master ${{ github.ref_name }}
+          name: Channel Nest ${{ github.ref_name }}
           body: |
-            Desktop release for Marketing Master.
+            Desktop release for Channel Nest.
 
             Built targets:
             - macOS Intel
@@ -292,3 +290,21 @@ jobs:
           files: release-portable/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false

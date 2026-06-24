@@ -12,7 +12,6 @@
 
 - `TAURI_SIGNING_PRIVATE_KEY`：Tauri updater 私钥
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：Tauri updater 私钥密码，如果生成私钥时没有密码，可以留空
-- `MARKETING_MASTER_RELAY_API_KEY`：Relay 授权 API Key，用于 GitHub Actions 打包客户端时注入
 
 私钥可以用下面命令生成：
 
@@ -56,8 +55,8 @@ openssl base64 -A -in AuthKey_XXXXXXXXXX.p8 -out apple-api-key-base64.txt
 
 先确认版本号已经更新：
 
-- `package.json`
-- `package-lock.json`
+- `frontend/package.json`
+- `frontend/package-lock.json`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 
@@ -92,6 +91,6 @@ GitHub Release 产物出来后，需要把对应平台的下载地址和 `.sig` 
 
 如果后端继续使用本地文件下载，则把 Release 里的 updater 包下载到：
 
-`backend/marketing-master-api/public/desktop-updates`
+`backend/channel_nest_api/public/desktop-updates`
 
 并更新生产配置中的 `desktop_update.platforms`。

@@ -1,5 +1,4 @@
-export type AuthMode = "relay" | "oAuth";
-export type HttpMethod = "GET" | "POST";
+export type AuthMode = "creator" | "oAuth";
 export type AccountStatus = "active" | "expired" | "pending";
 export type SidebarMenuId =
   | "channels"
@@ -49,17 +48,9 @@ export interface PlatformInfo {
   supportsBuiltinOauth: boolean;
 }
 
-export interface RelaySettings {
-  enabled: boolean;
-  serverUrl: string;
-  apiKey: string;
-}
-
 export interface PlatformAuthSettings {
   platformId: string;
   mode: AuthMode;
-  relayPath: string;
-  relayMethod: HttpMethod;
   authUrl: string;
   tokenUrl: string;
   profileUrl: string;
@@ -69,7 +60,6 @@ export interface PlatformAuthSettings {
 }
 
 export interface AuthSettings {
-  relay: RelaySettings;
   platforms: PlatformAuthSettings[];
 }
 
@@ -81,6 +71,7 @@ export interface ChannelAccount {
   nickname: string;
   avatar: string;
   followers?: number | null;
+  likes?: number | null;
   status: AccountStatus;
   relayAccountRef?: string | null;
   createdAt: string;

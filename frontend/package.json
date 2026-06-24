@@ -1,0 +1,24 @@
+{
+  "name": "channel-nest",
+  "version": "1.0.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config vite.config.ts --host 127.0.0.1 --port 1420",
+    "build": "tsc --project tsconfig.json --noEmit && vite build --config vite.config.ts",
+    "tauri": "cd .. && tauri",
+    "tauri:dev": "cd .. && tauri dev",
+    "tauri:build": "cd .. && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "simple-icons": "^16.24.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

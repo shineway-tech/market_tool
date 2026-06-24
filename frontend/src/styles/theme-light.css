@@ -206,6 +206,10 @@
   border-color: rgba(32, 70, 78, 0.1);
 }
 
+.theme-light .account-card.is-unavailable {
+  background: #f2f6f6;
+}
+
 .theme-light .account-avatar {
   color: #0f624f;
   background: #e4f2ee;

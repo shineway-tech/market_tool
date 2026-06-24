@@ -1,0 +1,45 @@
+{
+  "name": "channel_nest_api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bin/www",
+  "scripts": {
+    "start": "node bin/www",
+    "migrate": "node scripts/migrate.js up",
+    "migrate:status": "node scripts/migrate.js status",
+    "deploy:test": "scripts/deploy-api.sh test",
+    "deploy:prod": "scripts/deploy-api.sh prod",
+    "lint": "make lint",
+    "commitmsg": "commitlint -e .git/COMMIT_EDITMSG && make lint"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@commitlint/cli": "^7.2.1",
+    "@commitlint/config-conventional": "^7.1.2",
+    "commitlint": "^7.2.1",
+    "eslint": "^8.49",
+    "eslint-config-airbnb": "^19.0.4",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-react": "^7.37.4",
+    "husky": "^1.2.1",
+    "sequelize-cli": "^5.4.0"
+  },
+  "dependencies": {
+    "@honeykid/config": "^1.1.17",
+    "@honeykid/ml": "^1.0.5",
+    "axios": "^1.7.9",
+    "ioredis": "^5.7.0",
+    "joi": "^18.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "koa-router": "^14.0.0",
+    "lodash": "^4.18.1",
+    "mysql2": "^3.11.5",
+    "redlock": "^5.0.0-beta.2",
+    "sequelize": "^6.37.5"
+  }
+}

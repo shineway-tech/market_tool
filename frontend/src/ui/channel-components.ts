@@ -19,6 +19,7 @@ export interface AccountItemState {
   text: CopyText;
   platform?: PlatformInfo;
   isRefreshing: boolean;
+  isUnavailable: boolean;
   followersText: string;
   syncText: string;
   fallbackAvatar: string;
@@ -61,12 +62,14 @@ export function renderAccountItem({
   text,
   platform,
   isRefreshing,
+  isUnavailable,
   followersText,
   syncText,
   fallbackAvatar,
 }: AccountItemState) {
+  const platformId = platform?.id || account.platformId;
   return `
-    <article class="account-card">
+    <article class="account-card ${isUnavailable ? "is-unavailable" : ""}">
       <div class="account-avatar">
         ${
           account.avatar
@@ -88,7 +91,11 @@ export function renderAccountItem({
         </div>
       </div>
       <div class="account-card-actions">
-        <button class="icon-btn" type="button" data-open-homepage="${escapeAttribute(account.id)}" title="${text.homepage}">${icon("home")}</button>
+        ${
+          isUnavailable
+            ? `<button class="ghost-btn relogin-btn" type="button" data-login="${escapeAttribute(platformId)}"${platformId === "xiaohongshu" ? ' data-login-target="creator"' : ""} title="${text.reloginAccount}" ${isRefreshing ? "disabled" : ""}>${icon("refresh")}${text.reloginAccount}</button>`
+            : `<button class="icon-btn" type="button" data-open-homepage="${escapeAttribute(account.id)}" title="${text.homepage}" ${isRefreshing ? "disabled" : ""}>${icon("home")}</button>`
+        }
         <button class="icon-btn ${isRefreshing ? "is-loading" : ""}" type="button" data-refresh-account="${escapeAttribute(account.id)}" title="${text.refresh}" ${isRefreshing ? "disabled" : ""}>${icon("refresh")}</button>
         <button class="icon-btn danger" type="button" data-delete-account="${escapeAttribute(account.id)}" title="删除账号" ${isRefreshing ? "disabled" : ""}>${icon("trash")}</button>
       </div>
