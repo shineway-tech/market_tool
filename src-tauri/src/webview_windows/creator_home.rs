@@ -1,5 +1,66 @@
 use super::*;
 
+pub(crate) fn open_creator_homepage_webview(
+    app: AppHandle,
+    account: ChannelAccount,
+    saved_login_cookie: Option<String>,
+    saved_webview_session_id: Option<String>,
+) -> Result<(), String> {
+    let platform_id = normalize_platform_id(&account.platform_id);
+    if !creator_home_uses_webview(&platform_id) {
+        return Err("当前平台暂不支持内置主页窗口".to_string());
+    }
+
+    let app_for_open = app.clone();
+    app.run_on_main_thread(move || {
+        let result = match platform_id.as_str() {
+            "douyin" => open_douyin_creator_webview(
+                &app_for_open,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            ),
+            "xiaohongshu" => open_xhs_creator_webview(
+                &app_for_open,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            ),
+            "wechat-channels" => open_wx_channels_webview(
+                &app_for_open,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            ),
+            "bilibili" => open_bilibili_creator_webview(
+                &app_for_open,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            ),
+            "kuaishou" => open_kuaishou_creator_webview(
+                &app_for_open,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            ),
+            _ => Ok(()),
+        };
+
+        if let Err(error) = result {
+            eprintln!("[creator-home:{platform_id}] open failed: {error}");
+        }
+    })
+    .map_err(|error| format!("打开主页窗口失败: {error}"))
+}
+
+pub(crate) fn creator_home_uses_webview(platform_id: &str) -> bool {
+    matches!(
+        normalize_platform_id(platform_id).as_str(),
+        "douyin" | "xiaohongshu" | "wechat-channels" | "bilibili" | "kuaishou"
+    )
+}
+
 pub(crate) fn open_douyin_creator_webview(
     app: &AppHandle,
     account: &ChannelAccount,

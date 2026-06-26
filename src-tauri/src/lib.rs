@@ -882,57 +882,18 @@ async fn open_account_homepage(
     }
     ?;
 
-    match normalize_platform_id(&account.platform_id).as_str() {
-        "douyin" => {
-            open_douyin_creator_webview(
-                &app,
-                &account,
-                saved_login_cookie.as_deref(),
-                saved_webview_session_id.as_deref(),
-            )?;
-            Ok(account)
-        }
-        "xiaohongshu" => {
-            open_xhs_creator_webview(
-                &app,
-                &account,
-                saved_login_cookie.as_deref(),
-                saved_webview_session_id.as_deref(),
-            )?;
-            Ok(account)
-        }
-        "wechat-channels" => {
-            open_wx_channels_webview(
-                &app,
-                &account,
-                saved_login_cookie.as_deref(),
-                saved_webview_session_id.as_deref(),
-            )?;
-            Ok(account)
-        }
-        "bilibili" => {
-            open_bilibili_creator_webview(
-                &app,
-                &account,
-                saved_login_cookie.as_deref(),
-                saved_webview_session_id.as_deref(),
-            )?;
-            Ok(account)
-        }
-        "kuaishou" => {
-            open_kuaishou_creator_webview(
-                &app,
-                &account,
-                saved_login_cookie.as_deref(),
-                saved_webview_session_id.as_deref(),
-            )?;
-            Ok(account)
-        }
-        _ => {
-            let url = account_homepage_url(&account)?;
-            open_external_url(&url)?;
-            Ok(account)
-        }
+    if creator_home_uses_webview(&account.platform_id) {
+        open_creator_homepage_webview(
+            app.clone(),
+            account.clone(),
+            saved_login_cookie,
+            saved_webview_session_id,
+        )?;
+        Ok(account)
+    } else {
+        let url = account_homepage_url(&account)?;
+        open_external_url(&url)?;
+        Ok(account)
     }
 }
 

@@ -32,32 +32,26 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
 }
 
 pub(super) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
+    let _ = window.close();
     let _ = window.hide();
     let _ = window.destroy();
 }
 
 pub(super) fn close_other_creator_home_windows(app: &AppHandle, keep_label: &str) {
-    let mut closed_any = false;
     for (label, window) in app.webview_windows() {
         if label.starts_with("creator-home-") && label != keep_label {
             destroy_webview_window(&window);
-            closed_any = true;
         }
-    }
-
-    if closed_any {
-        std::thread::sleep(std::time::Duration::from_millis(180));
     }
 }
 
 fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
     let window_for_close = window.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let _ = window_for_close.hide();
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
             let window_to_destroy = window_for_close.clone();
             tauri::async_runtime::spawn(async move {
+                std::thread::sleep(std::time::Duration::from_millis(80));
                 let _ = window_to_destroy.destroy();
             });
         }
