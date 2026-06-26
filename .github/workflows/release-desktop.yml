@@ -90,7 +90,7 @@ jobs:
         run: npm --prefix frontend ci
 
       - name: Build frontend
-        run: npm --prefix frontend run build
+        run: npm run build
 
       - name: Import Apple Developer ID certificate
         env:
@@ -170,7 +170,7 @@ jobs:
               echo "Apple services network preflight failed; continuing so the build can retry notarization normally."
             fi
 
-            if npm --prefix frontend run tauri -- build --verbose ${{ matrix.args }}; then
+            if npm run tauri -- build --verbose ${{ matrix.args }}; then
               exit 0
             fi
 
@@ -257,13 +257,13 @@ jobs:
         run: npm --prefix frontend ci
 
       - name: Build frontend
-        run: npm --prefix frontend run build
+        run: npm run build
 
       - name: Build Windows portable app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm --prefix frontend run tauri -- build --no-bundle --verbose
+        run: npm run tauri -- build --no-bundle --verbose
 
       - name: Prepare Windows portable exe
         shell: powershell
