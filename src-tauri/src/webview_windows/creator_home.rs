@@ -16,6 +16,8 @@ pub(crate) fn open_douyin_creator_webview(
     };
     let title = format!("{title_name} - 抖音创作者中心");
 
+    close_other_creator_home_windows(app, &label);
+
     if let Some(window) = app.get_webview_window(&label) {
         prepare_external_webview_window(&window);
         let should_delay_navigation = saved_login_cookie.is_some();
@@ -183,6 +185,8 @@ pub(crate) fn open_xhs_creator_webview(
     };
     let title = format!("{title_name} - 小红书创作中心");
 
+    close_other_creator_home_windows(app, &label);
+
     if let Some(window) = app.get_webview_window(&label) {
         prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
@@ -277,6 +281,8 @@ pub(crate) fn open_wx_channels_webview(
     };
     let title = format!("{title_name} - 视频号后台");
 
+    close_other_creator_home_windows(app, &label);
+
     if let Some(window) = app.get_webview_window(&label) {
         prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
@@ -362,6 +368,8 @@ pub(crate) fn open_bilibili_creator_webview(
     };
     let title = format!("{title_name} - B 站创作中心");
 
+    close_other_creator_home_windows(app, &label);
+
     if let Some(window) = app.get_webview_window(&label) {
         prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
@@ -446,6 +454,8 @@ pub(crate) fn open_kuaishou_creator_webview(
         account.nickname.trim()
     };
     let title = format!("{title_name} - 快手创作者中心");
+
+    close_other_creator_home_windows(app, &label);
 
     if let Some(window) = app.get_webview_window(&label) {
         prepare_external_webview_window(&window);

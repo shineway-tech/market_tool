@@ -989,10 +989,16 @@ async function openHomepage(accountId: string) {
   openingHomepageIds.add(accountId);
   render();
   try {
-    const updated = await invokeCommand<ChannelAccount>("open_account_homepage", {
-      accountId,
-      userId: requireCurrentUserId(),
-    });
+    const updated = await withTimeout(
+      invokeCommand<ChannelAccount>("open_account_homepage", {
+        accountId,
+        userId: requireCurrentUserId(),
+      }),
+      12000,
+      language === "zh"
+        ? "打开主页超时，请关闭已打开的主页窗口后重试。"
+        : "Opening the homepage timed out. Close any open homepage window and try again.",
+    );
     await applyAccountUpdate(updated, { mirror: true });
   } catch (error) {
     showToast(normalizeError(error));
@@ -1090,4 +1096,18 @@ function normalizeError(error: unknown) {
     error,
     language === "zh" ? "操作失败，请稍后重试。" : "Operation failed. Please try again.",
   );
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) window.clearTimeout(timer);
+    }),
+    timeout,
+  ]);
 }
