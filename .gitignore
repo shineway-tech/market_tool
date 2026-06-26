@@ -41,6 +41,7 @@ pnpm-debug.log*
 !.env.example
 .secret/
 .secrets/
+secrets/
 backend/channel_nest_api/.npmrc
 backend/channel_nest_api/config/config.json
 backend/channel_nest_api/config/config.prod.json
