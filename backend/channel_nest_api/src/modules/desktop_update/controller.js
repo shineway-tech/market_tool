@@ -32,6 +32,18 @@ class DesktopUpdateController {
     ctx.body = update;
     await next();
   }
+
+  async publish(ctx, next) {
+    const release = service.publishRelease(ctx.state.entries);
+
+    ctx.setData({
+      latest_version: release.latest_version,
+      pub_date: release.pub_date,
+      platforms: release.platforms,
+      updated_at: release.updated_at,
+    });
+    await next();
+  }
 }
 
 module.exports = new DesktopUpdateController();

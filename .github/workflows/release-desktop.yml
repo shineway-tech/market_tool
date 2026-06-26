@@ -46,7 +46,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "Channel Nest $GITHUB_REF_NAME" \
-            --notes "Desktop release for Channel Nest."
+            --notes "Desktop release for Channel Nest. Installers and updater packages are uploaded to OSS; GitHub only exposes the source code archives."
 
   build-macos:
     name: Build ${{ matrix.name }}
@@ -60,10 +60,12 @@ jobs:
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
             artifact_arch: x64
+            update_arch: x86_64
           - name: macOS Apple Silicon
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
             artifact_arch: aarch64
+            update_arch: aarch64
 
     steps:
       - name: Checkout
@@ -208,25 +210,39 @@ jobs:
           cp "$app_tar_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz"
           cp "$app_sig_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz.sig"
 
-      - name: Upload macOS release assets
+      - name: Upload macOS artifacts to OSS
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Channel Nest ${{ github.ref_name }}
-          body: |
-            Desktop release for Channel Nest.
-
-            Built targets:
-            - macOS Intel
-            - macOS Apple Silicon
-            - Windows x64 portable exe
-            - Windows x64 updater package
-          draft: true
-          prerelease: false
-          files: release-macos/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALIYUN_OSS_REGION: ${{ secrets.ALIYUN_OSS_REGION }}
+          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_PUBLIC_BASE_URL: ${{ secrets.ALIYUN_OSS_PUBLIC_BASE_URL || 'https://cdn.honeykid.cn' }}
+          ALIYUN_OSS_PREFIX: ${{ secrets.ALIYUN_OSS_PREFIX || 'public/market_tool' }}
+          ALIYUN_OSS_OBJECT_ACL: ${{ secrets.ALIYUN_OSS_OBJECT_ACL }}
+        run: |
+          set -euo pipefail
+
+          app_version="$(node -p "require('./frontend/package.json').version")"
+          arch="${{ matrix.artifact_arch }}"
+          update_arch="${{ matrix.update_arch }}"
+          mkdir -p release-update-manifests
+
+          node backend/channel_nest_api/scripts/upload-desktop-artifacts.js \
+            --dir release-macos \
+            --version "$app_version" \
+            --platform "darwin-${update_arch}" \
+            --update-file "Channel_Nest_${app_version}_macos_${arch}.app.tar.gz" \
+            --signature-file "Channel_Nest_${app_version}_macos_${arch}.app.tar.gz.sig" \
+            --manifest-file "release-update-manifests/darwin-${update_arch}.json"
+
+      - name: Upload macOS update manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-update-manifest-darwin-${{ matrix.update_arch }}
+          path: release-update-manifests/*.json
 
   build-windows:
     name: Build Windows x64
@@ -306,25 +322,36 @@ jobs:
             exit 1
           }
 
-      - name: Upload Windows release assets
+      - name: Upload Windows artifacts to OSS
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Channel Nest ${{ github.ref_name }}
-          body: |
-            Desktop release for Channel Nest.
-
-            Built targets:
-            - macOS Intel
-            - macOS Apple Silicon
-            - Windows x64 portable exe
-            - Windows x64 updater package
-          draft: true
-          prerelease: false
-          files: release-windows/*
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALIYUN_OSS_REGION: ${{ secrets.ALIYUN_OSS_REGION }}
+          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_PUBLIC_BASE_URL: ${{ secrets.ALIYUN_OSS_PUBLIC_BASE_URL || 'https://cdn.honeykid.cn' }}
+          ALIYUN_OSS_PREFIX: ${{ secrets.ALIYUN_OSS_PREFIX || 'public/market_tool' }}
+          ALIYUN_OSS_OBJECT_ACL: ${{ secrets.ALIYUN_OSS_OBJECT_ACL }}
+        run: |
+          $appVersion = (Get-Content "frontend/package.json" | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path release-update-manifests | Out-Null
+
+          node backend/channel_nest_api/scripts/upload-desktop-artifacts.js `
+            --dir release-windows `
+            --version $appVersion `
+            --platform windows-x86_64 `
+            --update-file "Channel_Nest_${appVersion}_windows_x64_setup.exe" `
+            --signature-file "Channel_Nest_${appVersion}_windows_x64_setup.exe.sig" `
+            --manifest-file "release-update-manifests/windows-x86_64.json"
+
+      - name: Upload Windows update manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-update-manifest-windows-x86_64
+          path: release-update-manifests/*.json
 
   publish-release:
     name: Publish GitHub Release
@@ -335,6 +362,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download update manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-update-manifest-*
+          path: release-update-manifests
+          merge-multiple: true
+
+      - name: Publish desktop update manifest
+        env:
+          DESKTOP_UPDATE_RELEASE_TOKEN: ${{ secrets.DESKTOP_UPDATE_RELEASE_TOKEN }}
+          DESKTOP_UPDATE_API_URL: ${{ secrets.DESKTOP_UPDATE_API_URL }}
+          DESKTOP_UPDATE_NOTES: Desktop release for Channel Nest.
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          node backend/channel_nest_api/scripts/publish-desktop-update.js \
+            --manifest-dir release-update-manifests \
+            --version "$version"
+
       - name: Publish draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

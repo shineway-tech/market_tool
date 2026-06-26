@@ -56,6 +56,9 @@ PORT="${PORT}"
 
 mkdir -p "\${RELEASE_DIR}"
 tar -xzf "\${ARCHIVE_PATH}" -C "\${RELEASE_DIR}"
+mkdir -p "\${REMOTE_DIR}/shared/storage"
+rm -rf "\${RELEASE_DIR}/storage"
+ln -sfn "\${REMOTE_DIR}/shared/storage" "\${RELEASE_DIR}/storage"
 cp "\${RELEASE_DIR}/\${CONFIG_FILE}" "\${RELEASE_DIR}/config/config.json"
 
 cd "\${RELEASE_DIR}"

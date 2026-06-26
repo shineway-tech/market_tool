@@ -1,6 +1,29 @@
 const fs = require('fs');
 const path = require('path');
+const lodash = require('lodash');
 const config = require('../../../config');
+
+function resolveProjectPath(configuredPath) {
+  return path.isAbsolute(configuredPath)
+    ? configuredPath
+    : path.resolve(__dirname, '../../..', configuredPath);
+}
+
+function getManifestPath() {
+  const updateConfig = config.desktop_update || {};
+  return resolveProjectPath(updateConfig.manifest_path || 'storage/desktop-update-manifest.json');
+}
+
+function readManifest() {
+  const manifestPath = getManifestPath();
+  if (!fs.existsSync(manifestPath)) return {};
+
+  return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+}
+
+function getUpdateConfig() {
+  return lodash.defaultsDeep({}, readManifest(), config.desktop_update || {});
+}
 
 function normalizeVersion(version) {
   return String(version || '')
@@ -27,7 +50,7 @@ function isNewerVersion(latestVersion, currentVersion) {
 }
 
 function getUpdate(target, arch, currentVersion) {
-  const updateConfig = config.desktop_update || {};
+  const updateConfig = getUpdateConfig();
   if (!updateConfig.enabled) return null;
 
   const latestVersion = updateConfig.latest_version;
@@ -53,9 +76,7 @@ function getDownloadFile(fileName) {
 
   const updateConfig = config.desktop_update || {};
   const configuredDir = updateConfig.download_dir || 'public/desktop-updates';
-  const downloadDir = path.isAbsolute(configuredDir)
-    ? configuredDir
-    : path.resolve(__dirname, '../../..', configuredDir);
+  const downloadDir = resolveProjectPath(configuredDir);
   const filePath = path.resolve(downloadDir, fileName);
 
   if (!filePath.startsWith(`${downloadDir}${path.sep}`) || !fs.existsSync(filePath)) {
@@ -68,7 +89,33 @@ function getDownloadFile(fileName) {
   };
 }
 
+function publishRelease(input) {
+  const manifestPath = getManifestPath();
+  const current = readManifest();
+  const next = lodash.defaultsDeep({}, {
+    enabled: true,
+    latest_version: input.latest_version,
+    pub_date: input.pub_date,
+    notes: input.notes || '',
+    platforms: input.platforms,
+    updated_at: new Date().toISOString(),
+  }, current);
+
+  next.enabled = true;
+  next.latest_version = input.latest_version;
+  next.pub_date = input.pub_date;
+  next.notes = input.notes || '';
+  next.platforms = input.platforms;
+  next.updated_at = new Date().toISOString();
+
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`);
+
+  return next;
+}
+
 module.exports = {
   getUpdate,
   getDownloadFile,
+  publishRelease,
 };

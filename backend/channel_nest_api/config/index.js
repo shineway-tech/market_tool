@@ -33,9 +33,11 @@ const defaultConfig = {
   },
   desktop_update: {
     enabled: true,
+    release_token: '',
     latest_version: '1.0.0',
     pub_date: '2026-06-23T00:00:00Z',
     notes: '账号密码登录与注册、验证码校验、个人信息和密码修改；支持小红书、视频号、抖音、哔哩哔哩、快手渠道授权和多账号管理；支持账号刷新、删除、打开创作者主页；支持中英文、深浅色主题、本地 JSON 配置和意见反馈。',
+    manifest_path: 'storage/desktop-update-manifest.json',
     download_dir: 'public/desktop-updates',
     platforms: {},
   },
