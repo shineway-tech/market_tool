@@ -32,35 +32,19 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
 }
 
 pub(super) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
-    let _ = window.close();
-    let _ = window.hide();
     let _ = window.destroy();
 }
 
-pub(super) fn close_other_creator_home_windows(app: &AppHandle, keep_label: &str) {
+pub(super) fn close_creator_home_windows(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
-        if label.starts_with("creator-home-") && label != keep_label {
+        if label.starts_with("creator-home-") {
             destroy_webview_window(&window);
         }
     }
 }
 
-fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
-    let window_for_close = window.clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            let window_to_destroy = window_for_close.clone();
-            tauri::async_runtime::spawn(async move {
-                std::thread::sleep(std::time::Duration::from_millis(80));
-                let _ = window_to_destroy.destroy();
-            });
-        }
-    });
-}
-
 pub(super) fn prepare_external_webview_window(window: &WebviewWindow<tauri::Wry>) {
     ensure_close_controls(window);
-    force_destroy_on_close(window);
 }
 
 mod cookies;

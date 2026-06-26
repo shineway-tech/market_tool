@@ -100,50 +100,6 @@ pub(crate) fn inject_platform_login_cookie(
     Ok(())
 }
 
-pub(crate) fn navigate_xhs_after_cookie_ready(window: WebviewWindow<tauri::Wry>, url: Url) {
-    tauri::async_runtime::spawn(async move {
-        let mut ready = false;
-        for _ in 0..12 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            if xhs_webview_has_login_cookie(&window) {
-                ready = true;
-                break;
-            }
-        }
-        if !ready {
-            eprintln!("[cookie:xhs] key login cookies were not visible before navigation");
-        }
-        let _ = window.navigate(url);
-        let _ = window.show();
-        let _ = window.set_focus();
-    });
-}
-
-fn xhs_webview_has_login_cookie(window: &WebviewWindow<tauri::Wry>) -> bool {
-    let Ok((cookie_header, _)) = collect_webview_cookies(window, channel_cookie_urls("xiaohongshu")) else {
-        return false;
-    };
-    has_xhs_login_cookie_header(&cookie_header)
-}
-
-fn has_xhs_login_cookie_header(cookie_header: &str) -> bool {
-    cookie_header.split(';').any(|pair| {
-        let Some((name, value)) = pair.trim().split_once('=') else {
-            return false;
-        };
-        let name = name.trim();
-        !value.trim().is_empty()
-            && matches!(
-                name,
-                "customer-sso-sid"
-                    | "access-token-creator.xiaohongshu.com"
-                    | "galaxy_creator_session_id"
-                    | "galaxy.creator.beaker.session.id"
-                    | "x-user-id-creator.xiaohongshu.com"
-            )
-    })
-}
-
 pub(crate) fn set_webview_cookie(
     window: &WebviewWindow<tauri::Wry>,
     name: &str,
