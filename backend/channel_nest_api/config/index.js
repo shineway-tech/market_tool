@@ -15,7 +15,7 @@ const defaultConfig = {
   },
   mysql: {
     db: {
-      database: 'market_tool',
+      database: 'channel_nest',
       userName: 'root',
       password: '',
       conn: {
