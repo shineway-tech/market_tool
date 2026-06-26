@@ -34,12 +34,8 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
 fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
     let window_for_close = window.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let window = window_for_close.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = window.destroy();
-            });
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            let _ = window_for_close.destroy();
         }
     });
 }

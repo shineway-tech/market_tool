@@ -15,7 +15,7 @@ pub(crate) fn close_plugin_auth_windows_for_platform(app: &AppHandle, platform_i
     );
     if legacy_label != keep_label {
         if let Some(window) = app.get_webview_window(&legacy_label) {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
     let prefix = format!(
@@ -25,7 +25,7 @@ pub(crate) fn close_plugin_auth_windows_for_platform(app: &AppHandle, platform_i
     for window in app.webview_windows().into_values() {
         let label = window.label();
         if label.starts_with(&prefix) && label != keep_label {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
 }
@@ -199,6 +199,7 @@ pub(crate) fn open_plugin_login_window(
     close_plugin_auth_windows_for_platform(app, platform_id, &label);
 
     if let Some(window) = app.get_webview_window(&label) {
+        ensure_close_controls(&window);
         let _ = window.set_title(&title);
         let _ = window.navigate(url);
         let _ = window.show();
@@ -222,6 +223,9 @@ pub(crate) fn open_plugin_login_window(
 
     let mut builder = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
         .title(&title)
+        .decorations(true)
+        .closable(true)
+        .resizable(true)
         .inner_size(1120.0, 780.0)
         .min_inner_size(960.0, 640.0)
         .data_directory(data_dir)
@@ -247,6 +251,7 @@ pub(crate) fn open_plugin_login_window(
                     stable_label_fragment(popup_url.as_str())
                 );
                 if let Some(window) = app_for_popup.get_webview_window(&popup_label) {
+                    ensure_close_controls(&window);
                     let _ = window.navigate(popup_url);
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -258,6 +263,9 @@ pub(crate) fn open_plugin_login_window(
                     WebviewUrl::External(popup_url.clone()),
                 )
                 .title("快手登录 - 营销大师")
+                .decorations(true)
+                .closable(true)
+                .resizable(true)
                 .inner_size(760.0, 720.0)
                 .min_inner_size(520.0, 560.0)
                 .data_directory(popup_data_dir.clone())
@@ -277,12 +285,16 @@ pub(crate) fn open_plugin_login_window(
                         return tauri::webview::NewWindowResponse::Deny;
                     }
                 };
+                ensure_close_controls(&window);
+                force_destroy_on_close(&window);
                 tauri::webview::NewWindowResponse::Create { window }
             });
     }
     let window = builder
         .build()
         .map_err(|error| format!("打开平台登录窗口失败: {error}"))?;
+    ensure_close_controls(&window);
+    force_destroy_on_close(&window);
     if matches!(
         normalize_platform_id(platform_id).as_str(),
         "xiaohongshu" | "wechat-channels" | "bilibili" | "kuaishou"
