@@ -1,0 +1,88 @@
+name: Quick Windows Smoke Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quick-windows-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-portable:
+    name: Build Windows portable exe
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Fetch Rust dependencies with retry
+        shell: pwsh
+        env:
+          CARGO_NET_RETRY: 10
+          CARGO_HTTP_TIMEOUT: 600
+          CARGO_HTTP_LOW_SPEED_LIMIT: 0
+          CARGO_HTTP_MULTIPLEXING: false
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+        run: |
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            Write-Host "cargo fetch attempt $attempt/4"
+            cargo fetch --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --locked -v
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            if ($attempt -eq 4) {
+              exit $LASTEXITCODE
+            }
+
+            Start-Sleep -Seconds (30 * $attempt)
+          }
+
+      - name: Build portable exe only
+        shell: pwsh
+        env:
+          CARGO_NET_RETRY: 10
+          CARGO_HTTP_TIMEOUT: 600
+          CARGO_HTTP_LOW_SPEED_LIMIT: 0
+          CARGO_HTTP_MULTIPLEXING: false
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+        run: npm run tauri -- build --no-bundle --verbose
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          $appVersion = (Get-Content "frontend/package.json" | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force -Path quick-artifacts | Out-Null
+          Copy-Item "src-tauri/target/release/channel-nest.exe" "quick-artifacts/Channel_Nest_${appVersion}_windows_x64_smoke.exe" -Force
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Channel_Nest_windows_x64_smoke
+          path: quick-artifacts/*.exe
+          if-no-files-found: error
