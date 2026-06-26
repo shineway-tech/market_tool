@@ -67,6 +67,7 @@ let toastTimer: number | undefined;
 let authPollTimer: number | undefined;
 let refreshingAccountIds = new Set<string>();
 let refreshingPlatformIds = new Set<string>();
+let openingHomepageIds = new Set<string>();
 let language: LanguageMode = readStoredMode("channel-nest-language", "zh", ["zh", "en"]);
 let theme: ThemeMode = readStoredMode("channel-nest-theme", "dark", ["dark", "light"]);
 let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || "";
@@ -243,6 +244,7 @@ function accountDropdown() {
   return renderAccountDropdown({
     text: copy[language],
     user: currentUser,
+    hasUpdate: updates.state.status === "available",
   });
 }
 
@@ -362,7 +364,6 @@ function bindEvents() {
       activeMenuId = "channels";
       userMenuOpen = false;
       render();
-      void refreshPlatform(nextPlatformId, { silent: true, markUnavailable: true });
     });
   });
 
@@ -952,10 +953,7 @@ async function refreshAccount(accountId: string) {
   }
 }
 
-async function refreshPlatform(
-  platformId: string,
-  options: { silent?: boolean; markUnavailable?: boolean } = {},
-) {
+async function refreshPlatform(platformId: string) {
   if (refreshingPlatformIds.has(platformId)) return;
   const list = accounts.filter((item) => item.platformId === platformId);
   if (!list.length) return;
@@ -972,12 +970,6 @@ async function refreshPlatform(
       });
       await applyAccountUpdate(updated, { mirror: true });
     } catch (error) {
-      if (options.markUnavailable) {
-        const expired = await markAccountUnavailable(account.id);
-        if (expired) {
-          await applyAccountUpdate(expired, { mirror: true });
-        }
-      }
       console.warn("Failed to refresh account status", error);
       failedCount += 1;
     }
@@ -989,12 +981,12 @@ async function refreshPlatform(
       ? `${copy[language].platformRefreshed} ${language === "zh" ? `${failedCount} 个账号失败。` : `${failedCount} failed.`}`
       : copy[language].platformRefreshed;
   render();
-  if (!options.silent) showToast(toastMessage);
+  showToast(toastMessage);
 }
 
 async function openHomepage(accountId: string) {
-  if (!accountId || refreshingAccountIds.has(accountId)) return;
-  refreshingAccountIds.add(accountId);
+  if (!accountId || openingHomepageIds.has(accountId) || refreshingAccountIds.has(accountId)) return;
+  openingHomepageIds.add(accountId);
   render();
   try {
     const updated = await invokeCommand<ChannelAccount>("open_account_homepage", {
@@ -1003,13 +995,9 @@ async function openHomepage(accountId: string) {
     });
     await applyAccountUpdate(updated, { mirror: true });
   } catch (error) {
-    const expired = await markAccountUnavailable(accountId);
-    if (expired) {
-      await applyAccountUpdate(expired, { mirror: true });
-    }
     showToast(normalizeError(error));
   } finally {
-    refreshingAccountIds.delete(accountId);
+    openingHomepageIds.delete(accountId);
     render();
   }
 }
@@ -1058,6 +1046,7 @@ function accountItem(account: ChannelAccount) {
     text,
     platform,
     isRefreshing: refreshingAccountIds.has(account.id),
+    isOpeningHomepage: openingHomepageIds.has(account.id),
     isUnavailable: account.status !== "active",
     followersText: accountFollowersText(account, text, language),
     syncText: accountSyncText(account, text, language),

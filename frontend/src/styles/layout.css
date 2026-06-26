@@ -169,6 +169,15 @@
   cursor: pointer;
 }
 
+.menu-update-dot {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16);
+}
+
 .user-menu-item:hover {
   color: #f3fffb;
   background: rgba(22, 230, 138, 0.1);

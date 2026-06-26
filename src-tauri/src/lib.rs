@@ -863,7 +863,7 @@ async fn open_account_homepage(
     user_id: String,
 ) -> Result<ChannelAccount, String> {
     let user_id = normalize_user_id(&user_id)?;
-    let (mut account, saved_login_cookie, saved_webview_session_id) = {
+    let (account, saved_login_cookie, saved_webview_session_id) = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let account = store
             .accounts
@@ -882,78 +882,50 @@ async fn open_account_homepage(
     }
     ?;
 
-    if normalize_platform_id(&account.platform_id) == "xiaohongshu" {
-        open_xhs_creator_webview(
-            &app,
-            &account,
-            saved_login_cookie.as_deref(),
-            saved_webview_session_id.as_deref(),
-        )?;
-        spawn_creator_session_check(
-            app.clone(),
-            user_id,
-            account.clone(),
-            saved_login_cookie,
-            saved_webview_session_id,
-        );
-        return Ok(account);
-    }
-
-    if normalize_platform_id(&account.platform_id) == "kuaishou" {
-        open_kuaishou_creator_webview(
-            &app,
-            &account,
-            saved_login_cookie.as_deref(),
-            saved_webview_session_id.as_deref(),
-        )?;
-        return Ok(account);
-    }
-
-    let creator_status = match check_creator_session(
-        &app,
-        &account,
-        saved_login_cookie.as_deref(),
-        saved_webview_session_id.as_deref(),
-    )
-    .await
-    {
-        Ok(status) => status,
-        Err(error) => {
-            let _ = mark_account_expired(&app, &account.id);
-            return Err(error);
-        }
-    };
-    if let Some(profile) = creator_status.profile.as_ref() {
-        account = update_plugin_account_profile(&app, &user_id, &account.id, profile)?;
-    }
-    let login_cookie = creator_status
-        .login_cookie
-        .as_deref()
-        .or(saved_login_cookie.as_deref());
-    let webview_session_id = creator_status
-        .webview_session_id
-        .as_deref()
-        .or(saved_webview_session_id.as_deref());
-
     match normalize_platform_id(&account.platform_id).as_str() {
         "douyin" => {
-            open_douyin_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            open_douyin_creator_webview(
+                &app,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            )?;
             Ok(account)
         }
         "xiaohongshu" => {
-            open_xhs_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            open_xhs_creator_webview(
+                &app,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            )?;
             Ok(account)
         }
         "wechat-channels" => {
-            open_wx_channels_webview(&app, &account, login_cookie, webview_session_id)?;
+            open_wx_channels_webview(
+                &app,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            )?;
             Ok(account)
         }
         "bilibili" => {
-            open_bilibili_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            open_bilibili_creator_webview(
+                &app,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            )?;
             Ok(account)
         }
         "kuaishou" => {
-            open_kuaishou_creator_webview(&app, &account, login_cookie, webview_session_id)?;
+            open_kuaishou_creator_webview(
+                &app,
+                &account,
+                saved_login_cookie.as_deref(),
+                saved_webview_session_id.as_deref(),
+            )?;
             Ok(account)
         }
         _ => {
@@ -962,63 +934,6 @@ async fn open_account_homepage(
             Ok(account)
         }
     }
-}
-
-fn spawn_creator_session_check(
-    app: AppHandle,
-    user_id: String,
-    account: ChannelAccount,
-    saved_login_cookie: Option<String>,
-    saved_webview_session_id: Option<String>,
-) {
-    tauri::async_runtime::spawn(async move {
-        match check_creator_session(
-            &app,
-            &account,
-            saved_login_cookie.as_deref(),
-            saved_webview_session_id.as_deref(),
-        )
-        .await
-        {
-            Ok(status) => {
-                if let Some(profile) = status.profile.as_ref() {
-                    if let Err(error) =
-                        update_plugin_account_profile(&app, &user_id, &account.id, profile)
-                    {
-                        eprintln!(
-                            "[creator-session:{}] profile update failed for {}: {error}",
-                            account.platform_id, account.id
-                        );
-                    }
-                }
-                if let Some(login_cookie) = status.login_cookie.as_ref() {
-                    if let Err(error) = upsert_account_secret(&app, &account.id, login_cookie) {
-                        eprintln!(
-                            "[creator-session:{}] cookie update failed for {}: {error}",
-                            account.platform_id, account.id
-                        );
-                    }
-                }
-                if let Some(webview_session_id) = status.webview_session_id.as_ref() {
-                    if let Err(error) =
-                        upsert_account_webview_session(&app, &account.id, webview_session_id)
-                    {
-                        eprintln!(
-                            "[creator-session:{}] session update failed for {}: {error}",
-                            account.platform_id, account.id
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                eprintln!(
-                    "[creator-session:{}] background check failed for {}: {error}",
-                    account.platform_id, account.id
-                );
-                let _ = mark_account_expired(&app, &account.id);
-            }
-        }
-    });
 }
 
 #[tauri::command]
