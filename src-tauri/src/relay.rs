@@ -521,7 +521,7 @@ fn close_relay_auth_windows_for_platform(app: &AppHandle, platform_id: &str, kee
     for window in app.webview_windows().into_values() {
         let label = window.label();
         if label.starts_with(&prefix) && label != keep_label {
-            let _ = window.close();
+            destroy_webview_window(&window);
         }
     }
 }
@@ -529,7 +529,7 @@ fn close_relay_auth_windows_for_platform(app: &AppHandle, platform_id: &str, kee
 pub(crate) fn close_auth_window_by_label(app: &AppHandle, label: Option<&str>) {
     if let Some(label) = label {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
+            destroy_webview_window(&window);
         }
     }
 }
@@ -602,6 +602,7 @@ pub(crate) fn open_relay_auth_window(
     let title = format!("授权{} - 营销大师", platform_name(platform_id));
 
     if let Some(window) = app.get_webview_window(&label) {
+        prepare_external_webview_window(&window);
         let _ = window.set_title(&title);
         let _ = window.navigate(url);
         let _ = window.show();
@@ -618,6 +619,9 @@ pub(crate) fn open_relay_auth_window(
         .join(task_id);
     let window = WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::External(url.clone()))
         .title(&title)
+        .decorations(true)
+        .closable(true)
+        .resizable(true)
         .inner_size(1120.0, 780.0)
         .min_inner_size(960.0, 640.0)
         .data_directory(data_dir)
@@ -633,6 +637,7 @@ pub(crate) fn open_relay_auth_window(
         .center()
         .build()
         .map_err(|error| format!("打开快手授权窗口失败: {error}"))?;
+    prepare_external_webview_window(&window);
     let _ = window.clear_all_browsing_data();
     let _ = window.navigate(url);
     Ok(label)

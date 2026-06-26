@@ -15,7 +15,7 @@ pub(crate) fn close_plugin_auth_windows_for_platform(app: &AppHandle, platform_i
     );
     if legacy_label != keep_label {
         if let Some(window) = app.get_webview_window(&legacy_label) {
-            let _ = window.destroy();
+            destroy_webview_window(&window);
         }
     }
     let prefix = format!(
@@ -25,7 +25,7 @@ pub(crate) fn close_plugin_auth_windows_for_platform(app: &AppHandle, platform_i
     for window in app.webview_windows().into_values() {
         let label = window.label();
         if label.starts_with(&prefix) && label != keep_label {
-            let _ = window.destroy();
+            destroy_webview_window(&window);
         }
     }
 }
@@ -199,7 +199,7 @@ pub(crate) fn open_plugin_login_window(
     close_plugin_auth_windows_for_platform(app, platform_id, &label);
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         let _ = window.set_title(&title);
         let _ = window.navigate(url);
         let _ = window.show();
@@ -251,7 +251,7 @@ pub(crate) fn open_plugin_login_window(
                     stable_label_fragment(popup_url.as_str())
                 );
                 if let Some(window) = app_for_popup.get_webview_window(&popup_label) {
-                    ensure_close_controls(&window);
+                    prepare_external_webview_window(&window);
                     let _ = window.navigate(popup_url);
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -285,16 +285,14 @@ pub(crate) fn open_plugin_login_window(
                         return tauri::webview::NewWindowResponse::Deny;
                     }
                 };
-                ensure_close_controls(&window);
-                force_destroy_on_close(&window);
+                prepare_external_webview_window(&window);
                 tauri::webview::NewWindowResponse::Create { window }
             });
     }
     let window = builder
         .build()
         .map_err(|error| format!("打开平台登录窗口失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
     if matches!(
         normalize_platform_id(platform_id).as_str(),
         "xiaohongshu" | "wechat-channels" | "bilibili" | "kuaishou"

@@ -282,7 +282,7 @@ async fn refresh_xhs_account_from_task_store(
         .map_err(|error| format!("小红书创作中心地址无效: {error}"))?;
     let label = format!("xhs-refresh-{}", task_suffix(task_id));
     if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.close();
+        destroy_webview_window(&window);
     }
     let data_dir = app
         .path()
@@ -300,6 +300,7 @@ async fn refresh_xhs_account_from_task_store(
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
         .build()
         .map_err(|error| format!("读取小红书历史登录态失败: {error}"))?;
+    prepare_external_webview_window(&window);
 
     std::thread::sleep(std::time::Duration::from_millis(450));
     let cookies = collect_webview_cookies(
@@ -310,7 +311,7 @@ async fn refresh_xhs_account_from_task_store(
             "https://edith.xiaohongshu.com/",
         ],
     );
-    let _ = window.close();
+    destroy_webview_window(&window);
 
     let (cookie_header, login_cookie) = match cookies {
         Ok(cookies) => cookies,
@@ -370,7 +371,7 @@ async fn refresh_wx_channels_account_from_task_store(
     let url = creator_home_url("wechat-channels", "视频号后台")?;
     let label = format!("wx-sph-refresh-{}", task_suffix(task_id));
     if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.close();
+        destroy_webview_window(&window);
     }
     let data_dir = app
         .path()
@@ -388,6 +389,7 @@ async fn refresh_wx_channels_account_from_task_store(
         .user_agent(DESKTOP_CHROME_UA)
         .build()
         .map_err(|error| format!("读取视频号历史登录态失败: {error}"))?;
+    prepare_external_webview_window(&window);
 
     std::thread::sleep(std::time::Duration::from_millis(450));
     let profile = match collect_wx_sph_plugin_account(&window).await {
@@ -397,7 +399,7 @@ async fn refresh_wx_channels_account_from_task_store(
             None
         }
     };
-    let _ = window.close();
+    destroy_webview_window(&window);
 
     if let Some(profile) = profile {
         if plugin_profile_matches_account(&profile, account) {

@@ -1,4 +1,5 @@
 import type { AuthUser, MenuId } from "../domain/types";
+import { APP_VERSION } from "../config/app";
 import { icon } from "../ui/icons";
 import { escapeAttribute } from "../utils/html";
 
@@ -34,11 +35,14 @@ export function renderAppShell({
             ${icon("home")}
           </button>
         </nav>
-        <div class="corner-menu-wrap">
-          <button class="corner-menu-btn" type="button" data-action="toggle-user-menu" title="${escapeAttribute(currentUser.nickname)}" aria-expanded="${userMenuOpen ? "true" : "false"}">
-            ${icon("menu")}
-          </button>
-          ${userMenuOpen ? accountDropdown : ""}
+        <div class="rail-bottom">
+          <div class="rail-version" title="v${escapeAttribute(APP_VERSION)}">v${escapeAttribute(APP_VERSION)}</div>
+          <div class="corner-menu-wrap">
+            <button class="corner-menu-btn" type="button" data-action="toggle-user-menu" title="${escapeAttribute(currentUser.nickname)}" aria-expanded="${userMenuOpen ? "true" : "false"}">
+              ${icon("menu")}
+            </button>
+            ${userMenuOpen ? accountDropdown : ""}
+          </div>
         </div>
       </aside>
 

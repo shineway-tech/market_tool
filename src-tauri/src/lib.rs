@@ -560,9 +560,9 @@ async fn get_auth_task_status(
                             let account =
                                 update_plugin_account_profile(&app, &task.user_id, &existing.id, &profile)?;
                             let _ = upsert_account_webview_session(&app, &account.id, &task_id);
-                            let _ = app
-                                .get_webview_window(&window_label)
-                                .map(|window| window.close());
+                            if let Some(window) = app.get_webview_window(&window_label) {
+                                destroy_webview_window(&window);
+                            }
                             state
                                 .pending_auth
                                 .lock()
@@ -590,9 +590,9 @@ async fn get_auth_task_status(
                     let account = upsert_account_for_user(&app, &task.user_id, account)?;
                     upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
                     let _ = upsert_account_webview_session(&app, &account.id, &task_id);
-                    let _ = app
-                        .get_webview_window(&window_label)
-                        .map(|window| window.close());
+                    if let Some(window) = app.get_webview_window(&window_label) {
+                        destroy_webview_window(&window);
+                    }
                     state
                         .pending_auth
                         .lock()
@@ -614,9 +614,9 @@ async fn get_auth_task_status(
                     });
                 }
                 Err(PluginAuthError::Failed(message)) => {
-                    let _ = app
-                        .get_webview_window(&window_label)
-                        .map(|window| window.close());
+                    if let Some(window) = app.get_webview_window(&window_label) {
+                        destroy_webview_window(&window);
+                    }
                     state
                         .pending_auth
                         .lock()

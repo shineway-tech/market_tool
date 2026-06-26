@@ -17,7 +17,7 @@ pub(crate) fn open_douyin_creator_webview(
     let title = format!("{title_name} - 抖音创作者中心");
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         let should_delay_navigation = saved_login_cookie.is_some();
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_douyin_login_cookie(&window, login_cookie);
@@ -81,8 +81,7 @@ pub(crate) fn open_douyin_creator_webview(
         .center()
         .build()
         .map_err(|error| format!("打开抖音创作者中心失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
 
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_douyin_login_cookie(&window, login_cookie);
@@ -185,7 +184,7 @@ pub(crate) fn open_xhs_creator_webview(
     let title = format!("{title_name} - 小红书创作中心");
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_xhs_login_cookie(&window, login_cookie);
         }
@@ -250,8 +249,7 @@ pub(crate) fn open_xhs_creator_webview(
         .center()
         .build()
         .map_err(|error| format!("打开小红书创作中心失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_xhs_login_cookie(&window, login_cookie);
         navigate_xhs_after_cookie_ready(window.clone(), url);
@@ -280,7 +278,7 @@ pub(crate) fn open_wx_channels_webview(
     let title = format!("{title_name} - 视频号后台");
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_wx_channels_login_cookie(&window, login_cookie);
         }
@@ -336,8 +334,7 @@ pub(crate) fn open_wx_channels_webview(
         .center()
         .build()
         .map_err(|error| format!("打开视频号后台失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
 
@@ -366,7 +363,7 @@ pub(crate) fn open_bilibili_creator_webview(
     let title = format!("{title_name} - B 站创作中心");
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_bilibili_login_cookie(&window, login_cookie);
         }
@@ -422,8 +419,7 @@ pub(crate) fn open_bilibili_creator_webview(
         .center()
         .build()
         .map_err(|error| format!("打开 B 站创作中心失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
 
@@ -452,7 +448,7 @@ pub(crate) fn open_kuaishou_creator_webview(
     let title = format!("{title_name} - 快手创作者中心");
 
     if let Some(window) = app.get_webview_window(&label) {
-        ensure_close_controls(&window);
+        prepare_external_webview_window(&window);
         if let Some(login_cookie) = saved_login_cookie {
             let _ = inject_kuaishou_login_cookie(&window, login_cookie);
         }
@@ -508,8 +504,7 @@ pub(crate) fn open_kuaishou_creator_webview(
         .center()
         .build()
         .map_err(|error| format!("打开快手创作者中心失败: {error}"))?;
-    ensure_close_controls(&window);
-    force_destroy_on_close(&window);
+    prepare_external_webview_window(&window);
     let _ = window.show();
     let _ = window.set_focus();
 

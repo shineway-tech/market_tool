@@ -31,13 +31,28 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
     let _ = window.set_resizable(true);
 }
 
+pub(super) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
+    let _ = window.hide();
+    let _ = window.destroy();
+}
+
 fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
     let window_for_close = window.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            let _ = window_for_close.destroy();
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window_for_close.hide();
+            let window_to_destroy = window_for_close.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = window_to_destroy.destroy();
+            });
         }
     });
+}
+
+pub(super) fn prepare_external_webview_window(window: &WebviewWindow<tauri::Wry>) {
+    ensure_close_controls(window);
+    force_destroy_on_close(window);
 }
 
 mod cookies;
