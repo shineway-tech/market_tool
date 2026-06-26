@@ -276,11 +276,54 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Fetch Rust dependencies with retry
+        shell: pwsh
+        env:
+          CARGO_NET_RETRY: 10
+          CARGO_HTTP_TIMEOUT: 600
+          CARGO_HTTP_LOW_SPEED_LIMIT: 0
+          CARGO_HTTP_MULTIPLEXING: false
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+        run: |
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            Write-Host "cargo fetch attempt $attempt/5"
+            cargo fetch --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --locked -v
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            if ($attempt -eq 5) {
+              exit $LASTEXITCODE
+            }
+
+            Start-Sleep -Seconds (45 * $attempt)
+          }
+
       - name: Build Windows app and updater package
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build --bundles nsis --verbose
+          CARGO_NET_RETRY: 10
+          CARGO_HTTP_TIMEOUT: 600
+          CARGO_HTTP_LOW_SPEED_LIMIT: 0
+          CARGO_HTTP_MULTIPLEXING: false
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Host "Windows Tauri build attempt $attempt/3"
+            npm run tauri -- build --bundles nsis --verbose
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            if ($attempt -eq 3) {
+              exit $LASTEXITCODE
+            }
+
+            Remove-Item -Recurse -Force "src-tauri/target/release/bundle" -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds (90 * $attempt)
+          }
 
       - name: Prepare Windows release artifacts
         shell: powershell
