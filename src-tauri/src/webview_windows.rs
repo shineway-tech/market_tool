@@ -31,6 +31,15 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
     let _ = window.set_resizable(true);
 }
 
+fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
+    let window_for_close = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            let _ = window_for_close.destroy();
+        }
+    });
+}
+
 pub(super) fn open_douyin_creator_webview(
     app: &AppHandle,
     account: &ChannelAccount,
@@ -113,6 +122,7 @@ pub(super) fn open_douyin_creator_webview(
         .build()
         .map_err(|error| format!("打开抖音创作者中心失败: {error}"))?;
     ensure_close_controls(&window);
+    force_destroy_on_close(&window);
 
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_douyin_login_cookie(&window, login_cookie);
@@ -281,6 +291,7 @@ pub(super) fn open_xhs_creator_webview(
         .build()
         .map_err(|error| format!("打开小红书创作中心失败: {error}"))?;
     ensure_close_controls(&window);
+    force_destroy_on_close(&window);
     if let Some(login_cookie) = saved_login_cookie {
         let _ = inject_xhs_login_cookie(&window, login_cookie);
         navigate_xhs_after_cookie_ready(window.clone(), url);
@@ -366,6 +377,7 @@ pub(super) fn open_wx_channels_webview(
         .build()
         .map_err(|error| format!("打开视频号后台失败: {error}"))?;
     ensure_close_controls(&window);
+    force_destroy_on_close(&window);
     let _ = window.show();
     let _ = window.set_focus();
 
@@ -451,6 +463,7 @@ pub(super) fn open_bilibili_creator_webview(
         .build()
         .map_err(|error| format!("打开 B 站创作中心失败: {error}"))?;
     ensure_close_controls(&window);
+    force_destroy_on_close(&window);
     let _ = window.show();
     let _ = window.set_focus();
 
@@ -536,6 +549,7 @@ pub(super) fn open_kuaishou_creator_webview(
         .build()
         .map_err(|error| format!("打开快手创作者中心失败: {error}"))?;
     ensure_close_controls(&window);
+    force_destroy_on_close(&window);
     let _ = window.show();
     let _ = window.set_focus();
 
