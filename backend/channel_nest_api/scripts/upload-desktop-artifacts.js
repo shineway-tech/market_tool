@@ -46,13 +46,12 @@ function stableObjectFileName(fileName, version) {
     .replace(/--+/g, '-');
 }
 
-function objectKeyFor(fileName, version, prefix) {
-  const useVersionedPath = process.env.ALIYUN_OSS_VERSIONED_PATH === 'true';
-  const useStableName = process.env.ALIYUN_OSS_STABLE_OBJECT_NAMES !== 'false';
-  const objectFileName = useStableName ? stableObjectFileName(fileName, version) : fileName;
+function stableObjectKeyFor(fileName, version, prefix) {
+  return `${prefix}/${stableObjectFileName(fileName, version)}`;
+}
 
-  if (useVersionedPath) return `${prefix}/${version}/${objectFileName}`;
-  return `${prefix}/${objectFileName}`;
+function versionedObjectKeyFor(fileName, version, prefix) {
+  return `${prefix}/${version}/${stableObjectFileName(fileName, version)}`;
 }
 
 function publicUrlFor(objectKey) {
@@ -166,23 +165,33 @@ async function main() {
   required(process.env.ALIYUN_OSS_ACCESS_KEY_SECRET, 'ALIYUN_OSS_ACCESS_KEY_SECRET');
 
   const uploaded = [];
+  const uploadedKeys = new Set();
   const fileNames = fs.readdirSync(artifactDir)
     .filter((fileName) => fs.statSync(path.join(artifactDir, fileName)).isFile());
   const objectAcl = process.env.ALIYUN_OSS_OBJECT_ACL;
 
   for (const fileName of fileNames) {
     const filePath = path.join(artifactDir, fileName);
-    const objectKey = objectKeyFor(fileName, version, prefix);
-    await putObject(objectKey, filePath, { objectAcl });
+    const objectKey = versionedObjectKeyFor(fileName, version, prefix);
+    const stableObjectKey = stableObjectKeyFor(fileName, version, prefix);
+
+    for (const key of [objectKey, stableObjectKey]) {
+      if (uploadedKeys.has(key)) continue;
+      await putObject(key, filePath, { objectAcl });
+      uploadedKeys.add(key);
+    }
+
     uploaded.push({
       file: fileName,
       oss_file: path.basename(objectKey),
       object_key: objectKey,
       url: publicUrlFor(objectKey),
+      stable_object_key: stableObjectKey,
+      stable_url: publicUrlFor(stableObjectKey),
     });
   }
 
-  const updateObjectKey = objectKeyFor(updateFileName, version, prefix);
+  const updateObjectKey = versionedObjectKeyFor(updateFileName, version, prefix);
   const manifest = {
     version,
     pub_date: new Date().toISOString(),
