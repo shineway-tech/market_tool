@@ -5,6 +5,23 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
   if (language === "en") {
     return [
       {
+        version: "1.0.3",
+        date: "2026.06.26",
+        icon: "spark",
+        sections: [
+          {
+            icon: "home",
+            title: "Navigation",
+            items: ["Added a compact left icon rail", "Added a home shortcut back to channel management"],
+          },
+          {
+            icon: "refresh",
+            title: "Fixes",
+            items: ["Fixed Windows creator homepage WebView windows not closing from the title bar", "Kept Windows release output ready for portable use and updater packaging"],
+          },
+        ],
+      },
+      {
         version: "1.0.1",
         date: "2026.06.24",
         icon: "spark",
@@ -57,6 +74,23 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
   }
 
   return [
+    {
+      version: "1.0.3",
+      date: "2026.06.26",
+      icon: "spark",
+      sections: [
+        {
+          icon: "home",
+          title: "导航体验",
+          items: ["增加左侧窄图标栏", "增加主页入口，可从设置、公告、反馈等页面回到渠道管理"],
+        },
+        {
+          icon: "refresh",
+          title: "问题修复",
+          items: ["修复 Windows 平台创作者主页 WebView 无法通过标题栏关闭的问题", "Windows 发布流程同时保留免安装版本和自动更新打包资产"],
+        },
+      ],
+    },
     {
       version: "1.0.1",
       date: "2026.06.24",

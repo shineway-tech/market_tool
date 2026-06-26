@@ -6,29 +6,35 @@
     var(--window);
 }
 
-.theme-light .appbar {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafb 100%);
-  border-bottom-color: rgba(32, 70, 78, 0.11);
-}
-
 .theme-light .brand-mark {
   color: #ffffff;
   background: #148f70;
 }
 
-.theme-light .sidebar {
-  background: linear-gradient(180deg, #eef2f4, #e7edf0);
+.theme-light .icon-rail {
+  background: linear-gradient(180deg, #eef4f5, #e9f0f2);
   border-right-color: rgba(32, 70, 78, 0.12);
 }
 
-.theme-light .search {
-  border-color: rgba(32, 70, 78, 0.11);
+.theme-light .rail-btn,
+.theme-light .corner-menu-btn {
+  color: #4d666d;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
-.theme-light .avatar-btn {
-  color: #0f624f;
-  background: #e5f2ee;
-  box-shadow: inset 0 0 0 1px rgba(20, 143, 112, 0.16);
+.theme-light .rail-btn:hover,
+.theme-light .corner-menu-btn:hover {
+  color: #12343a;
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(20, 143, 112, 0.24);
+}
+
+.theme-light .rail-btn.active {
+  color: #ffffff;
+  background: #148f70;
+  border-color: #148f70;
 }
 
 .theme-light .user-dropdown {
@@ -47,25 +53,6 @@
   background: rgba(201, 80, 92, 0.1);
 }
 
-.theme-light .nav-item {
-  color: #5f747a;
-}
-
-.theme-light .nav-item:not(.active):hover {
-  color: #1b3339;
-  background: rgba(32, 70, 78, 0.055);
-  box-shadow: none;
-}
-
-.theme-light .nav-item.active {
-  color: #12343a;
-  background: #dfeeea;
-  box-shadow:
-    inset 3px 0 0 var(--green),
-    inset 0 0 0 1px rgba(20, 143, 112, 0.14);
-}
-
-.theme-light .channel-head h1,
 .theme-light .page-head h1,
 .theme-light .selected-platform h2,
 .theme-light .account-summary strong,
@@ -119,7 +106,6 @@
 .theme-light .account-meta,
 .theme-light .account-summary span,
 .theme-light .page-head p,
-.theme-light .channel-head p,
 .theme-light .account-panel-head p,
 .theme-light .settings-card p,
 .theme-light .placeholder-panel p,
@@ -185,16 +171,14 @@
 }
 
 .theme-light .ghost-btn,
-.theme-light .icon-btn,
-.theme-light .collapse {
+.theme-light .icon-btn {
   color: #38565d;
   background: #ffffff;
   border-color: rgba(32, 70, 78, 0.16);
 }
 
 .theme-light .ghost-btn:hover,
-.theme-light .icon-btn:hover,
-.theme-light .collapse:hover {
+.theme-light .icon-btn:hover {
   color: #12343a;
   background: #f2f7f6;
   border-color: rgba(20, 143, 112, 0.3);

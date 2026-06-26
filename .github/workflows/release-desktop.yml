@@ -221,6 +221,7 @@ jobs:
             - macOS Intel
             - macOS Apple Silicon
             - Windows x64 portable exe
+            - Windows x64 updater package
           draft: true
           prerelease: false
           files: release-macos/*
@@ -228,7 +229,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows:
-    name: Build Windows x64 portable exe
+    name: Build Windows x64
     needs: prepare-release
     runs-on: windows-latest
 
@@ -259,20 +260,53 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build Windows portable app
+      - name: Build Windows app and updater package
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build --no-bundle --verbose
+        run: npm run tauri -- build --bundles nsis --verbose
 
-      - name: Prepare Windows portable exe
+      - name: Prepare Windows release artifacts
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path release-portable | Out-Null
+          New-Item -ItemType Directory -Force -Path release-windows | Out-Null
           $appVersion = (Get-Content "frontend/package.json" | ConvertFrom-Json).version
-          Copy-Item "src-tauri/target/release/channel-nest.exe" "release-portable/Channel_Nest_${appVersion}_windows_x64_portable.exe" -Force
+          Copy-Item "src-tauri/target/release/channel-nest.exe" "release-windows/Channel_Nest_${appVersion}_windows_x64_portable.exe" -Force
 
-      - name: Upload Windows portable exe release asset
+          $bundleDir = "src-tauri/target/release/bundle/nsis"
+          if (!(Test-Path $bundleDir)) {
+            Write-Error "Missing Windows NSIS bundle directory."
+            Get-ChildItem "src-tauri/target/release/bundle" -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+          $copiedSignature = $false
+          Get-ChildItem $bundleDir -File | ForEach-Object {
+            $targetName = $null
+            if ($_.Name.EndsWith(".exe.sig")) {
+              $targetName = "Channel_Nest_${appVersion}_windows_x64_setup.exe.sig"
+              $copiedSignature = $true
+            } elseif ($_.Name.EndsWith(".exe")) {
+              $targetName = "Channel_Nest_${appVersion}_windows_x64_setup.exe"
+            } elseif ($_.Name.EndsWith(".zip.sig")) {
+              $targetName = "Channel_Nest_${appVersion}_windows_x64_updater.zip.sig"
+              $copiedSignature = $true
+            } elseif ($_.Name.EndsWith(".zip")) {
+              $targetName = "Channel_Nest_${appVersion}_windows_x64_updater.zip"
+            }
+
+            if ($targetName) {
+              Copy-Item $_.FullName "release-windows/$targetName" -Force
+            }
+          }
+
+          if (!$copiedSignature) {
+            Write-Error "Missing Windows updater signature file."
+            Get-ChildItem $bundleDir -File | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+      - name: Upload Windows release assets
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
@@ -285,9 +319,10 @@ jobs:
             - macOS Intel
             - macOS Apple Silicon
             - Windows x64 portable exe
+            - Windows x64 updater package
           draft: true
           prerelease: false
-          files: release-portable/*.exe
+          files: release-windows/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

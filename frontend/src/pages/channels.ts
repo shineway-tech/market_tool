@@ -31,12 +31,6 @@ export function renderChannelsPage({
   formatFollowersTotal,
 }: ChannelsPageState) {
   return `
-    <section class="channel-head">
-      <div>
-        <h1>${text.channelsTitle}</h1>
-      </div>
-    </section>
-
     <section class="channel-layout">
       <aside class="platform-panel">
         <div class="panel-title">

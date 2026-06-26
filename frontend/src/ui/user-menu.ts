@@ -25,6 +25,20 @@ export function renderAccountDropdown({ text, user }: AccountDropdownState) {
         ${icon("lock")}
         <span>${text.passwordSettings}</span>
       </button>
+      <div class="user-menu-separator" aria-hidden="true"></div>
+      <button class="user-menu-item" type="button" data-menu="settings">
+        ${icon("settings")}
+        <span>${text.menu.settings}</span>
+      </button>
+      <button class="user-menu-item" type="button" data-menu="releases">
+        ${icon("spark")}
+        <span>${text.menu.releases}</span>
+      </button>
+      <button class="user-menu-item" type="button" data-menu="feedback">
+        ${icon("message")}
+        <span>${text.menu.feedback}</span>
+      </button>
+      <div class="user-menu-separator" aria-hidden="true"></div>
       <button class="user-menu-item danger" type="button" data-action="logout">
         ${icon("logout")}
         <span>${text.logout}</span>

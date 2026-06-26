@@ -1,11 +1,11 @@
 export type AuthMode = "creator" | "oAuth";
 export type AccountStatus = "active" | "expired" | "pending";
-export type SidebarMenuId =
-  | "channels"
+export type UserMenuPageId =
   | "settings"
   | "releases"
   | "feedback";
-export type MenuId = SidebarMenuId | "profile" | "password";
+export type AppPageId = "channels" | UserMenuPageId;
+export type MenuId = AppPageId | "profile" | "password";
 export type LanguageMode = "zh" | "en";
 export type ThemeMode = "dark" | "light";
 export type LoginTarget = "home" | "creator";

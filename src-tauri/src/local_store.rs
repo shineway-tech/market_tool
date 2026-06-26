@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 pub(super) fn upsert_account_secret(app: &AppHandle, account_id: &str, login_cookie: &str) -> Result<(), String> {
     if login_cookie.trim().is_empty() {

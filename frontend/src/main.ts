@@ -1,10 +1,7 @@
-import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
-import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import "./styles.css";
 import type {
   AuthSession,
-  AuthSettings,
   AuthTaskStatus,
   AuthUser,
   AuthViewMode,
@@ -14,21 +11,23 @@ import type {
   LanguageMode,
   LoginTarget,
   MenuId,
-  PlatformAuthSettings,
   PlatformInfo,
-  SidebarMenuId,
   StartLoginResponse,
   ThemeMode,
-  UpdateState,
 } from "./domain/types";
 import { fallbackPlatforms } from "./domain/platforms";
-import { defaultPlatformSettings } from "./domain/auth-settings";
 import { isQrAuth } from "./domain/auth-task";
 import { releaseHistoryForLanguage } from "./domain/releases";
 import { copy } from "./i18n/copy";
-import { icon } from "./ui/icons";
-import { escapeAttribute, escapeHtml } from "./utils/html";
-import { readStoredBoolean, readStoredMode } from "./utils/storage";
+import { readStoredMode } from "./utils/storage";
+import { normalizeError as normalizeErrorMessage } from "./utils/errors";
+import {
+  clearFieldError,
+  clearFormFieldErrors,
+  formValue,
+  reportFieldError,
+  reportNamedFieldError,
+} from "./utils/forms";
 import {
   accountCountLabel as formatAccountCountLabel,
   formatFollowersTotal as formatAccountFollowersTotal,
@@ -42,7 +41,6 @@ import {
   renderEmptyAccounts,
   renderPlatformItem,
 } from "./ui/channel-components";
-import { renderNavItem } from "./ui/navigation";
 import { renderAccountDropdown } from "./ui/user-menu";
 import { renderAuthPage } from "./pages/auth";
 import { renderChannelsPage } from "./pages/channels";
@@ -51,23 +49,17 @@ import { renderPasswordPage } from "./pages/password";
 import { renderProfilePage } from "./pages/profile";
 import { renderReleasesPage } from "./pages/releases";
 import { renderSettingsPage } from "./pages/settings";
-import {
-  API_BASE_URL,
-  AUTH_TOKEN_KEY,
-  AUTO_UPDATE_KEY,
-  INPUT_HINTS_OFF,
-} from "./config/app";
+import { renderAppShell } from "./app/shell";
+import { API_BASE_URL, AUTH_TOKEN_KEY, INPUT_HINTS_OFF } from "./config/app";
+import { UpdateController } from "./features/updater";
+import { accountBackendPayload, mirrorAccounts, upsertAccount } from "./features/channel-sync";
 import { requestApi, type ApiRequestOptions } from "./services/api";
 import { invokeCommand } from "./services/tauri-commands";
 
 let platforms: PlatformInfo[] = fallbackPlatforms;
 let accounts: ChannelAccount[] = [];
-let settings: AuthSettings = {
-  platforms: defaultPlatformSettings(),
-};
 let selectedPlatformId = "xiaohongshu";
 let activeMenuId: MenuId = "channels";
-let sidebarCollapsed = false;
 let userMenuOpen = false;
 let activeAuthTask: StartLoginResponse | null = null;
 let activeAuthMessage = "";
@@ -77,14 +69,6 @@ let refreshingAccountIds = new Set<string>();
 let refreshingPlatformIds = new Set<string>();
 let language: LanguageMode = readStoredMode("channel-nest-language", "zh", ["zh", "en"]);
 let theme: ThemeMode = readStoredMode("channel-nest-theme", "dark", ["dark", "light"]);
-let autoUpdateEnabled = readStoredBoolean(AUTO_UPDATE_KEY, true);
-let autoUpdateChecked = false;
-let expandedReleaseVersions = new Set<string>();
-let pendingUpdate: Update | null = null;
-let updateState: UpdateState = {
-  status: "idle",
-  downloadedBytes: 0,
-};
 let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || "";
 let currentUser: AuthUser | null = null;
 let authViewMode: AuthViewMode = "login";
@@ -111,6 +95,14 @@ let feedbackDraft = {
   content: "",
   contact: "",
 };
+
+const updates = new UpdateController({
+  getText: () => copy[language],
+  getFallbackError: () => (language === "zh" ? "操作失败，请稍后重试。" : "Operation failed. Please try again."),
+  canAutoCheck: () => Boolean(currentUser),
+  render: () => render(),
+  showToast: (message) => showToast(message),
+});
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -157,7 +149,6 @@ async function loadClientData() {
     });
     platforms = bootstrap.platforms;
     accounts = bootstrap.accounts;
-    settings = bootstrap.settings;
     await mirrorAccountsToBackend(accounts);
   } catch (error) {
     console.warn("Using browser fallback because Tauri is not available", error);
@@ -186,10 +177,10 @@ async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Pro
 async function mirrorAccountsToBackend(items: ChannelAccount[]) {
   if (!authToken || !items.length) return;
 
-  await Promise.allSettled(items.map((account) => apiRequest<ChannelAccount>("/v1/channel/accounts", {
+  await mirrorAccounts(items, (account) => apiRequest<ChannelAccount>("/v1/channel/accounts", {
     method: "POST",
-    body: backendAccountPayload(account),
-  })));
+    body: accountBackendPayload(account),
+  }));
 }
 
 async function applyAccountUpdate(
@@ -200,20 +191,12 @@ async function applyAccountUpdate(
     return;
   }
 
-  let found = false;
-  accounts = accounts.map((item) => {
-    if (item.id !== updated.id) return item;
-    found = true;
-    return updated;
-  });
-  if (!found && (!updated.userId || updated.userId === currentUser?.id)) {
-    accounts = [updated, ...accounts];
-  }
+  accounts = upsertAccount(accounts, updated, currentUser?.id);
 
   if (options.mirror && authToken) {
     await apiRequest<ChannelAccount>("/v1/channel/accounts", {
       method: "POST",
-      body: backendAccountPayload(updated),
+      body: accountBackendPayload(updated),
     }).catch(() => undefined);
   }
 
@@ -222,75 +205,26 @@ async function applyAccountUpdate(
   }
 }
 
-function backendAccountPayload(account: ChannelAccount) {
-  return {
-    platform_id: account.platformId,
-    platform_uid: account.uid,
-    nickname: account.nickname,
-    avatar: account.avatar,
-    followers: account.followers ?? null,
-    likes: account.likes ?? null,
-    status: account.status,
-    homepage_url: "",
-  };
-}
-
 function render() {
-  const text = copy[language];
-
   if (!currentUser) {
     appRoot.innerHTML = authPage();
     bindAuthEvents();
     return;
   }
 
-  appRoot.innerHTML = `
-    <div class="window theme-${theme} ${sidebarCollapsed ? "is-collapsed" : ""}">
-      <header class="appbar">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">M</div>
-          <div class="brand-text">${text.appName}</div>
-        </div>
-        <button class="collapse" type="button" data-action="toggle-sidebar" title="${sidebarCollapsed ? "展开菜单" : "收起菜单"}">
-          ${icon("chevron")}
-        </button>
-        <label class="search">
-          ${icon("search")}
-          <input type="search" ${INPUT_HINTS_OFF} placeholder="${text.search}" />
-        </label>
-        <div class="top-actions">
-          <button class="icon-btn" type="button" data-menu="settings" title="${text.settingsTitle}">${icon("settings")}</button>
-          <div class="user-menu-wrap">
-            <button class="avatar-btn" type="button" data-action="toggle-user-menu" title="${escapeAttribute(currentUser.nickname)}" aria-expanded="${userMenuOpen ? "true" : "false"}">
-              ${escapeHtml(currentUser.nickname.slice(0, 1) || "营")}
-            </button>
-            ${userMenuOpen ? accountDropdown() : ""}
-          </div>
-        </div>
-      </header>
-
-      <aside class="sidebar">
-        <nav class="nav-group" aria-label="主菜单">
-          ${navItem("channels", "layers")}
-        </nav>
-        <nav class="nav-group nav-bottom" aria-label="系统菜单">
-          ${navItem("settings", "settings")}
-          ${navItem("releases", "spark")}
-          ${navItem("feedback", "message")}
-        </nav>
-      </aside>
-
-      <main class="main">
-        ${renderMainContent()}
-      </main>
-
-      ${activeAuthTask ? authDialog(activeAuthTask) : ""}
-      <div class="toast" hidden></div>
-    </div>
-  `;
+  appRoot.innerHTML = renderAppShell({
+    theme,
+    currentUser,
+    activeMenuId,
+    homeLabel: copy[language].homepage,
+    userMenuOpen,
+    mainContent: renderMainContent(),
+    accountDropdown: accountDropdown(),
+    authDialog: activeAuthTask ? authDialog(activeAuthTask) : "",
+  });
 
   bindEvents();
-  scheduleAutoUpdateCheck();
+  updates.scheduleAutoCheck();
 }
 
 function authPage() {
@@ -384,160 +318,31 @@ function feedbackPage() {
 
 function releasesPage() {
   const entries = releaseHistoryForLanguage(language);
-  const status = updateStatusText();
-  const progress = updateProgressPercent();
-  const isChecking = updateState.status === "checking";
-  const isDownloading = updateState.status === "downloading";
-  const canInstall = updateState.status === "available" && Boolean(pendingUpdate);
 
   return renderReleasesPage({
     text: copy[language],
     entries,
-    updateState,
-    autoUpdateEnabled,
-    canInstall,
-    isChecking,
-    isDownloading,
-    status,
-    progress,
-    expandedReleaseVersions,
+    updateState: updates.state,
+    autoUpdateEnabled: updates.autoEnabled,
+    canInstall: updates.canInstall,
+    isChecking: updates.isChecking,
+    isDownloading: updates.isDownloading,
+    status: updates.statusText(),
+    progress: updates.progressPercent(),
+    expandedReleaseVersions: updates.expandedVersions,
   });
 }
 
-function updateStatusText() {
-  const text = copy[language];
-  if (updateState.status === "checking") return text.checkingUpdate;
-  if (updateState.status === "latest") return text.latestVersion;
-  if (updateState.status === "available") {
-    return updateState.availableVersion
-      ? `${text.updateAvailable} v${updateState.availableVersion}`
-      : text.updateAvailable;
-  }
-  if (updateState.status === "downloading") return `${text.downloadingUpdate} ${updateProgressPercent()}%`;
-  if (updateState.status === "installed") return text.updateInstalled;
-  if (updateState.status === "error") return updateState.error || text.updateFailed;
-  return autoUpdateEnabled ? text.autoUpdateOn : text.autoUpdateOff;
-}
-
-function updateProgressPercent() {
-  if (!updateState.contentLength) return 0;
-  return Math.min(100, Math.round((updateState.downloadedBytes / updateState.contentLength) * 100));
-}
-
-function scheduleAutoUpdateCheck() {
-  if (!currentUser || !autoUpdateEnabled || autoUpdateChecked) return;
-
-  autoUpdateChecked = true;
-  window.setTimeout(() => {
-    void checkForUpdates({ silent: true });
-  }, 900);
-}
-
-async function checkForUpdates(options: { silent?: boolean } = {}) {
-  if (updateState.status === "checking" || updateState.status === "downloading") return;
-
-  pendingUpdate = null;
-  updateState = {
-    status: "checking",
-    downloadedBytes: 0,
-  };
-  render();
-
-  try {
-    const update = await check({ timeout: 15000 });
-
-    if (!update) {
-      updateState = {
-        status: "latest",
-        downloadedBytes: 0,
-      };
-      if (!options.silent) showToast(copy[language].latestVersion);
-      render();
-      return;
-    }
-
-    pendingUpdate = update;
-    updateState = {
-      status: "available",
-      availableVersion: update.version,
-      notes: update.body,
-      downloadedBytes: 0,
-    };
-    if (!options.silent) showToast(updateStatusText());
-    render();
-  } catch (error) {
-    updateState = {
-      status: "error",
-      downloadedBytes: 0,
-      error: normalizeUpdateError(error),
-    };
-    if (!options.silent) showToast(updateState.error || copy[language].updateFailed);
-    render();
-  }
-}
-
-async function installPendingUpdate() {
-  if (updateState.status === "downloading") return;
-  if (!pendingUpdate) {
-    await checkForUpdates({ silent: false });
-    if (!pendingUpdate) return;
-  }
-
-  updateState = {
-    ...updateState,
-    status: "downloading",
-    downloadedBytes: 0,
-    contentLength: undefined,
-  };
-  render();
-
-  try {
-    let downloadedBytes = 0;
-    let contentLength: number | undefined;
-    await pendingUpdate.downloadAndInstall((event: DownloadEvent) => {
-      if (event.event === "Started") {
-        contentLength = event.data.contentLength;
-        downloadedBytes = 0;
-      }
-
-      if (event.event === "Progress") {
-        downloadedBytes += event.data.chunkLength;
-      }
-
-      if (event.event === "Finished") {
-        downloadedBytes = contentLength || downloadedBytes;
-      }
-
-      updateState = {
-        ...updateState,
-        status: "downloading",
-        downloadedBytes,
-        contentLength,
-      };
-      render();
-    });
-
-    pendingUpdate = null;
-    updateState = {
-      status: "installed",
-      downloadedBytes: contentLength || downloadedBytes,
-      contentLength,
-    };
-    showToast(copy[language].updateInstalled);
-    render();
-    await relaunch();
-  } catch (error) {
-    updateState = {
-      status: "error",
-      downloadedBytes: 0,
-      error: normalizeUpdateError(error),
-    };
-    showToast(updateState.error || copy[language].updateFailed);
-    render();
-  }
-}
-
 function bindEvents() {
+  document.querySelector<HTMLElement>(".window")?.addEventListener("click", (event) => {
+    if (!userMenuOpen) return;
+    if (event.target instanceof Element && event.target.closest(".corner-menu-wrap")) return;
+
+    captureSettingsDrafts();
+    userMenuOpen = false;
+    render();
+  });
+
   document.querySelectorAll<HTMLElement>("[data-menu]").forEach((item) => {
     item.addEventListener("click", () => {
       captureSettingsDrafts();
@@ -564,15 +369,6 @@ function bindEvents() {
   document.querySelectorAll<HTMLElement>("[data-action]").forEach((element) => {
     element.addEventListener("click", () => {
       const action = element.dataset.action;
-      if (action === "toggle-sidebar") {
-        sidebarCollapsed = !sidebarCollapsed;
-        userMenuOpen = false;
-        const windowEl = document.querySelector<HTMLElement>(".window");
-        windowEl?.classList.toggle("is-collapsed", sidebarCollapsed);
-        element.setAttribute("title", sidebarCollapsed ? "展开菜单" : "收起菜单");
-        document.querySelector<HTMLElement>(".user-dropdown")?.remove();
-        document.querySelector<HTMLElement>(".avatar-btn")?.setAttribute("aria-expanded", "false");
-      }
       if (action === "toggle-user-menu") {
         captureSettingsDrafts();
         userMenuOpen = !userMenuOpen;
@@ -596,20 +392,15 @@ function bindEvents() {
         logout();
       }
       if (action === "check-update") {
-        void checkForUpdates({ silent: false });
+        void updates.check({ silent: false });
       }
       if (action === "install-update") {
-        void installPendingUpdate();
+        void updates.installPending();
       }
       if (action === "toggle-release-content") {
         const releaseVersion = element.dataset.releaseVersion;
         if (!releaseVersion) return;
-        if (expandedReleaseVersions.has(releaseVersion)) {
-          expandedReleaseVersions.delete(releaseVersion);
-        } else {
-          expandedReleaseVersions.add(releaseVersion);
-        }
-        render();
+        updates.toggleRelease(releaseVersion);
       }
     });
   });
@@ -676,13 +467,11 @@ function bindEvents() {
   document.querySelectorAll<HTMLInputElement>(".settings-form input").forEach((input) => {
     input.addEventListener("input", () => {
       if (input.form?.dataset.settingsForm === "password") {
-        input.form.querySelectorAll<HTMLInputElement>("input").forEach((field) => {
-          field.setCustomValidity("");
-        });
+        clearFormFieldErrors(input.form);
         return;
       }
 
-      input.setCustomValidity("");
+      clearFieldError(input);
     });
   });
 
@@ -695,44 +484,37 @@ function bindEvents() {
 
   const autoUpdateInput = document.querySelector<HTMLInputElement>("[data-auto-update]");
   autoUpdateInput?.addEventListener("change", () => {
-    autoUpdateEnabled = autoUpdateInput.checked;
-    localStorage.setItem(AUTO_UPDATE_KEY, String(autoUpdateEnabled));
-    autoUpdateChecked = false;
-    showToast(autoUpdateEnabled ? copy[language].autoUpdateOn : copy[language].autoUpdateOff);
-    render();
+    updates.setAutoEnabled(autoUpdateInput.checked);
   });
 
   document.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>("[data-feedback-form] textarea, [data-feedback-form] input")
     .forEach((field) => {
-      field.addEventListener("input", () => field.setCustomValidity(""));
+      field.addEventListener("input", () => clearFieldError(field));
     });
 }
 
 function captureSettingsDrafts() {
   const profileForm = document.querySelector<HTMLFormElement>('[data-settings-form="profile"]');
   if (profileForm) {
-    const formData = new FormData(profileForm);
     profileDraft = {
-      nickname: String(formData.get("nickname") || ""),
+      nickname: formValue(profileForm, "nickname"),
     };
   }
 
   const passwordForm = document.querySelector<HTMLFormElement>('[data-settings-form="password"]');
   if (passwordForm) {
-    const formData = new FormData(passwordForm);
     passwordDraft = {
-      currentPassword: String(formData.get("currentPassword") || ""),
-      newPassword: String(formData.get("newPassword") || ""),
-      confirmPassword: String(formData.get("confirmPassword") || ""),
+      currentPassword: formValue(passwordForm, "currentPassword"),
+      newPassword: formValue(passwordForm, "newPassword"),
+      confirmPassword: formValue(passwordForm, "confirmPassword"),
     };
   }
 
   const feedbackForm = document.querySelector<HTMLFormElement>("[data-feedback-form]");
   if (feedbackForm) {
-    const formData = new FormData(feedbackForm);
     feedbackDraft = {
-      content: String(formData.get("content") || ""),
-      contact: String(formData.get("contact") || ""),
+      content: formValue(feedbackForm, "content"),
+      contact: formValue(feedbackForm, "contact"),
     };
   }
 }
@@ -740,10 +522,9 @@ function captureSettingsDrafts() {
 async function submitFeedbackForm(form: HTMLFormElement) {
   if (feedbackBusy) return;
 
-  const formData = new FormData(form);
   feedbackDraft = {
-    content: String(formData.get("content") || ""),
-    contact: String(formData.get("contact") || ""),
+    content: formValue(form, "content"),
+    contact: formValue(form, "contact"),
   };
   feedbackBusy = true;
   render();
@@ -774,20 +555,14 @@ async function submitFeedbackForm(form: HTMLFormElement) {
 function reportFeedbackFieldError(message: string) {
   const form = document.querySelector<HTMLFormElement>("[data-feedback-form]");
   if (!form) return;
-  const field = form.elements.namedItem(message.includes("联系方式") ? "contact" : "content");
-
-  if (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) {
-    field.setCustomValidity(message);
-    field.reportValidity();
-  }
+  reportNamedFieldError(form, message.includes("联系方式") ? "contact" : "content", message);
 }
 
 async function submitProfileForm(form: HTMLFormElement) {
   if (profileBusy) return;
 
-  const formData = new FormData(form);
   profileDraft = {
-    nickname: String(formData.get("nickname") || ""),
+    nickname: formValue(form, "nickname"),
   };
   profileBusy = true;
   render();
@@ -814,11 +589,10 @@ async function submitProfileForm(form: HTMLFormElement) {
 async function submitPasswordForm(form: HTMLFormElement) {
   if (passwordBusy) return;
 
-  const formData = new FormData(form);
   passwordDraft = {
-    currentPassword: String(formData.get("currentPassword") || ""),
-    newPassword: String(formData.get("newPassword") || ""),
-    confirmPassword: String(formData.get("confirmPassword") || ""),
+    currentPassword: formValue(form, "currentPassword"),
+    newPassword: formValue(form, "newPassword"),
+    confirmPassword: formValue(form, "confirmPassword"),
   };
 
   if (passwordDraft.newPassword !== passwordDraft.confirmPassword) {
@@ -857,13 +631,7 @@ async function submitPasswordForm(form: HTMLFormElement) {
 
 function reportSettingsFieldError(formName: string, fieldName: string, message: string) {
   const form = document.querySelector<HTMLFormElement>(`[data-settings-form="${formName}"]`);
-  if (!form) return;
-  const field = form.elements.namedItem(fieldName);
-
-  if (field instanceof HTMLInputElement) {
-    field.setCustomValidity(message);
-    field.reportValidity();
-  }
+  reportNamedFieldError(form, fieldName, message);
 }
 
 function passwordErrorField(message: string) {
@@ -909,7 +677,7 @@ function bindAuthEvents() {
 
   document.querySelectorAll<HTMLInputElement>(".login-form input").forEach((input) => {
     input.addEventListener("input", () => {
-      input.setCustomValidity("");
+      clearFieldError(input);
     });
   });
 }
@@ -917,23 +685,21 @@ function bindAuthEvents() {
 function captureAuthDraftFromForm() {
   const form = document.querySelector<HTMLFormElement>("[data-auth-form]");
   if (!form) return;
-  const formData = new FormData(form);
   authDraft = {
-    account: String(formData.get("account") || ""),
-    password: String(formData.get("password") || ""),
-    nickname: String(formData.get("nickname") || ""),
-    captchaCode: String(formData.get("captchaCode") || ""),
+    account: formValue(form, "account"),
+    password: formValue(form, "password"),
+    nickname: formValue(form, "nickname"),
+    captchaCode: formValue(form, "captchaCode"),
   };
 }
 
 async function submitAuthForm(form: HTMLFormElement) {
   if (!captcha || authBusy) return;
-  const formData = new FormData(form);
   authDraft = {
-    account: String(formData.get("account") || ""),
-    password: String(formData.get("password") || ""),
-    nickname: String(formData.get("nickname") || ""),
-    captchaCode: String(formData.get("captchaCode") || ""),
+    account: formValue(form, "account"),
+    password: formValue(form, "password"),
+    nickname: formValue(form, "nickname"),
+    captchaCode: formValue(form, "captchaCode"),
   };
   const isRegister = authViewMode === "register";
   authBusy = true;
@@ -980,8 +746,7 @@ function reportAuthFieldError(message: string) {
   if (!form) return;
 
   const field = getAuthErrorField(message, form);
-  field.setCustomValidity(message);
-  field.reportValidity();
+  reportFieldError(field, message);
 }
 
 function getAuthErrorField(message: string, form: HTMLFormElement) {
@@ -1095,7 +860,7 @@ async function checkAuthOnce(verbose = true) {
       if (result.account) {
         await apiRequest<ChannelAccount>("/v1/channel/accounts", {
           method: "POST",
-          body: backendAccountPayload(result.account),
+          body: accountBackendPayload(result.account),
         }).catch(() => undefined);
       } else {
         await mirrorAccountsToBackend(accounts);
@@ -1271,19 +1036,9 @@ function getSelectedPlatform() {
   return platforms.find((item) => item.id === selectedPlatformId) || platforms[0];
 }
 
-function getPlatformSettings(platformId: string): PlatformAuthSettings {
-  let item = settings.platforms.find((entry) => entry.platformId === platformId);
-  if (!item) {
-    item = defaultPlatformSettings().find((entry) => entry.platformId === platformId)!;
-    settings.platforms.push(item);
-  }
-  return item;
-}
-
 function platformItem(platform: PlatformInfo) {
   const count = accounts.filter((item) => item.platformId === platform.id).length;
   const active = platform.id === selectedPlatformId && activeMenuId === "channels";
-  getPlatformSettings(platform.id);
 
   return renderPlatformItem({
     platform,
@@ -1330,15 +1085,6 @@ function authDialog(task: StartLoginResponse) {
   });
 }
 
-function navItem(id: SidebarMenuId, iconName: string) {
-  return renderNavItem({
-    id,
-    iconName,
-    label: copy[language].menu[id],
-    active: id === activeMenuId,
-  });
-}
-
 function showToast(message: string) {
   const toast = document.querySelector<HTMLDivElement>(".toast");
   if (!toast) return;
@@ -1351,15 +1097,8 @@ function showToast(message: string) {
 }
 
 function normalizeError(error: unknown) {
-  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
-  if (message) return message;
-  return language === "zh" ? "操作失败，请稍后重试。" : "Operation failed. Please try again.";
-}
-
-function normalizeUpdateError(error: unknown) {
-  const message = normalizeError(error);
-  if (!message || /not implemented|not available|permission|plugin/i.test(message)) {
-    return copy[language].updateUnavailable;
-  }
-  return message;
+  return normalizeErrorMessage(
+    error,
+    language === "zh" ? "操作失败，请稍后重试。" : "Operation failed. Please try again.",
+  );
 }

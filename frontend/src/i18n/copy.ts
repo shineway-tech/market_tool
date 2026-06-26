@@ -1,4 +1,4 @@
-import type { SidebarMenuId } from "../domain/types";
+import type { UserMenuPageId } from "../domain/types";
 
 export const copy = {
   zh: {
@@ -22,7 +22,6 @@ export const copy = {
     loginRequired: "请先登录后使用客户端。",
     loginSuccess: "登录成功。",
     registerSuccess: "注册成功。",
-    search: "搜索渠道 / 账号",
     localClient: "本地客户端",
     loginAccount: "登录账号",
     reloginAccount: "再次登录",
@@ -30,9 +29,8 @@ export const copy = {
     refresh: "刷新",
     refreshing: "刷新中",
     refreshPlatform: "刷新当前平台",
-    channelsTitle: "渠道管理",
     channelsDesc: "连接内容平台账号，用于账号授权和数据同步。",
-    platformPanel: "渠道平台",
+    platformPanel: "平台",
     accountPanel: "已授权账号",
     availableAccount: "可用账号",
     totalFans: "粉丝总数",
@@ -109,11 +107,10 @@ export const copy = {
     updateUnavailable: "更新检查不可用。",
     updateProgress: "下载进度",
     menu: {
-      channels: "渠道管理",
       settings: "系统设置",
       releases: "更新公告",
       feedback: "意见反馈",
-    } satisfies Record<SidebarMenuId, string>,
+    } satisfies Record<UserMenuPageId, string>,
   },
   en: {
     appName: "Channel Nest",
@@ -136,7 +133,6 @@ export const copy = {
     loginRequired: "Sign in to use the client.",
     loginSuccess: "Signed in.",
     registerSuccess: "Account created.",
-    search: "Search channels / accounts",
     localClient: "Local client",
     loginAccount: "Sign in",
     reloginAccount: "Sign in again",
@@ -144,9 +140,8 @@ export const copy = {
     refresh: "Refresh",
     refreshing: "Refreshing",
     refreshPlatform: "Refresh platform",
-    channelsTitle: "Channel Management",
     channelsDesc: "Connect content platform accounts for authorization and data sync.",
-    platformPanel: "Platforms",
+    platformPanel: "Platform",
     accountPanel: "Authorized Accounts",
     availableAccount: "Available",
     totalFans: "Total Followers",
@@ -223,11 +218,10 @@ export const copy = {
     updateUnavailable: "Update check unavailable.",
     updateProgress: "Download progress",
     menu: {
-      channels: "Channels",
       settings: "Settings",
       releases: "Updates",
       feedback: "Feedback",
-    } satisfies Record<SidebarMenuId, string>,
+    } satisfies Record<UserMenuPageId, string>,
   },
 };
 
