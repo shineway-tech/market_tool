@@ -118,21 +118,6 @@ fn open_creator_home_window(
         url.clone()
     };
 
-    hide_creator_home_windows_except(app, &label);
-
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.set_title(&title);
-        if let Some(login_cookie) = saved_login_cookie {
-            if let Err(error) = inject_creator_home_login_cookie(&window, spec.platform_id, login_cookie) {
-                eprintln!("[creator-home:{}] cookie injection failed: {error}", spec.platform_id);
-            }
-        }
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.navigate(url);
-        return Ok(());
-    }
-
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(initial_url))
         .title(&title)
         .decorations(true)
@@ -179,7 +164,11 @@ fn creator_home_window_label(
         .filter(|value| !value.trim().is_empty())
         .map(stable_label_fragment)
         .unwrap_or_else(|| "local".to_string());
-    format!("creator-home-{}-{account_key}-{session_key}", spec.label_segment)
+    let open_key = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("creator-home-{}-{account_key}-{session_key}-{open_key}", spec.label_segment)
 }
 
 fn creator_home_data_store(
