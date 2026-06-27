@@ -31,8 +31,29 @@ fn ensure_close_controls(window: &WebviewWindow<tauri::Wry>) {
     let _ = window.set_resizable(true);
 }
 
-pub(super) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
+fn destroy_window_handle(window: &WebviewWindow<tauri::Wry>) {
+    let _ = window.hide();
     let _ = window.destroy();
+}
+
+fn force_destroy_on_close(window: &WebviewWindow<tauri::Wry>) {
+    let window_for_close = window.clone();
+    let closing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let closing_for_event = closing.clone();
+
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if closing_for_event.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            api.prevent_close();
+            destroy_window_handle(&window_for_close);
+        }
+    });
+}
+
+pub(super) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
+    destroy_window_handle(window);
 }
 
 pub(super) fn close_creator_home_windows(app: &AppHandle) {
@@ -45,6 +66,7 @@ pub(super) fn close_creator_home_windows(app: &AppHandle) {
 
 pub(super) fn prepare_external_webview_window(window: &WebviewWindow<tauri::Wry>) {
     ensure_close_controls(window);
+    force_destroy_on_close(window);
 }
 
 mod cookies;
