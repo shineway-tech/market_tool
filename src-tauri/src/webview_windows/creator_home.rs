@@ -106,13 +106,17 @@ fn open_creator_home_window(
         account.nickname.trim()
     };
     let title = format!("{title_name} - {}", spec.title_suffix);
-    let label = creator_home_window_label(spec, account, saved_webview_session_id);
+    let open_key = creator_home_open_key();
+    let label = creator_home_window_label(spec, account, saved_webview_session_id, &open_key);
+    let has_saved_login_cookie = saved_login_cookie
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
     let (data_dir, data_store_identifier) =
-        creator_home_data_store(app, spec, account, saved_webview_session_id)?;
+        creator_home_data_store(app, spec, account, saved_webview_session_id, &open_key, has_saved_login_cookie)?;
     let account_id = account.id.clone();
     let app_for_load = app.clone();
     let platform_id = spec.platform_id;
-    let initial_url = if saved_login_cookie.is_some() {
+    let initial_url = if has_saved_login_cookie {
         Url::parse("about:blank").map_err(|error| format!("空白页地址无效: {error}"))?
     } else {
         url.clone()
@@ -125,7 +129,7 @@ fn open_creator_home_window(
         .resizable(true)
         .inner_size(1180.0, 820.0)
         .min_inner_size(980.0, 680.0)
-        .visible(saved_login_cookie.is_none())
+        .visible(!has_saved_login_cookie)
         .focused(true)
         .focusable(true)
         .data_directory(data_dir)
@@ -158,17 +162,21 @@ fn creator_home_window_label(
     spec: CreatorHomeSpec,
     account: &ChannelAccount,
     saved_webview_session_id: Option<&str>,
+    open_key: &str,
 ) -> String {
     let account_key = stable_label_fragment(&account.id);
     let session_key = saved_webview_session_id
         .filter(|value| !value.trim().is_empty())
         .map(stable_label_fragment)
         .unwrap_or_else(|| "local".to_string());
-    let open_key = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
     format!("creator-home-{}-{account_key}-{session_key}-{open_key}", spec.label_segment)
+}
+
+fn creator_home_open_key() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| stable_label_fragment(&Uuid::new_v4().to_string()))
 }
 
 fn creator_home_data_store(
@@ -176,11 +184,28 @@ fn creator_home_data_store(
     spec: CreatorHomeSpec,
     account: &ChannelAccount,
     saved_webview_session_id: Option<&str>,
+    open_key: &str,
+    use_isolated_runtime_store: bool,
 ) -> Result<(std::path::PathBuf, [u8; 16]), String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法创建{}数据目录: {error}", spec.title_suffix))?;
+
+    if use_isolated_runtime_store {
+        let account_segment = stable_label_fragment(&account.id);
+        return Ok((
+            app_data_dir
+                .join("creator-home-runtime")
+                .join(spec.data_key)
+                .join(account_segment)
+                .join(open_key),
+            stable_data_store_identifier(&format!(
+                "creator-home-runtime:{}:{}:{open_key}",
+                spec.label_segment, account.id
+            )),
+        ));
+    }
 
     if let Some(session_id) = saved_webview_session_id {
         let root = match spec.session_store {

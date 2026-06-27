@@ -989,17 +989,16 @@ async function openHomepage(accountId: string) {
   openingHomepageIds.add(accountId);
   render();
   try {
-    const updated = await withTimeout(
+    await withTimeout(
       invokeCommand<ChannelAccount>("open_account_homepage", {
         accountId,
         userId: requireCurrentUserId(),
       }),
-      12000,
+      5000,
       language === "zh"
-        ? "打开主页超时，请关闭已打开的主页窗口后重试。"
-        : "Opening the homepage timed out. Close any open homepage window and try again.",
+        ? "打开主页窗口超时，请稍后重试。"
+        : "Opening the homepage window timed out. Please try again.",
     );
-    await applyAccountUpdate(updated, { mirror: true });
   } catch (error) {
     showToast(normalizeError(error));
   } finally {
