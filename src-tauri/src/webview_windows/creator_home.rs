@@ -106,7 +106,7 @@ fn open_creator_home_window(
         account.nickname.trim()
     };
     let title = format!("{title_name} - {}", spec.title_suffix);
-    let label = creator_home_window_label(spec, account);
+    let label = creator_home_window_label(spec, account, saved_webview_session_id);
     let (data_dir, data_store_identifier) =
         creator_home_data_store(app, spec, account, saved_webview_session_id)?;
     let account_id = account.id.clone();
@@ -118,7 +118,20 @@ fn open_creator_home_window(
         url.clone()
     };
 
-    close_creator_home_windows(app);
+    hide_creator_home_windows_except(app, &label);
+
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_title(&title);
+        if let Some(login_cookie) = saved_login_cookie {
+            if let Err(error) = inject_creator_home_login_cookie(&window, spec.platform_id, login_cookie) {
+                eprintln!("[creator-home:{}] cookie injection failed: {error}", spec.platform_id);
+            }
+        }
+        let _ = window.navigate(url);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
 
     let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(initial_url))
         .title(&title)
@@ -142,7 +155,7 @@ fn open_creator_home_window(
         .build()
         .map_err(|error| format!("打开{}失败: {error}", spec.title_suffix))?;
 
-    prepare_external_webview_window(&window);
+    prepare_creator_home_window(&window);
 
     if let Some(login_cookie) = saved_login_cookie {
         if let Err(error) = inject_creator_home_login_cookie(&window, spec.platform_id, login_cookie) {
@@ -156,10 +169,17 @@ fn open_creator_home_window(
     Ok(())
 }
 
-fn creator_home_window_label(spec: CreatorHomeSpec, account: &ChannelAccount) -> String {
+fn creator_home_window_label(
+    spec: CreatorHomeSpec,
+    account: &ChannelAccount,
+    saved_webview_session_id: Option<&str>,
+) -> String {
     let account_key = stable_label_fragment(&account.id);
-    let open_key = task_suffix(&Uuid::new_v4().to_string());
-    format!("creator-home-{}-{account_key}-{open_key}", spec.label_segment)
+    let session_key = saved_webview_session_id
+        .filter(|value| !value.trim().is_empty())
+        .map(stable_label_fragment)
+        .unwrap_or_else(|| "local".to_string());
+    format!("creator-home-{}-{account_key}-{session_key}", spec.label_segment)
 }
 
 fn creator_home_data_store(
