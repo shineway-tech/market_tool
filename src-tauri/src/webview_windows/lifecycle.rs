@@ -15,41 +15,16 @@ fn destroy_window_handle(window: &WebviewWindow<tauri::Wry>) {
     let _ = window.destroy();
 }
 
-fn schedule_hide_after_close_request(
-    window: WebviewWindow<tauri::Wry>,
-    closing: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-
-        let window_for_main = window.clone();
-        let closing_for_main = closing.clone();
-        if window
-            .run_on_main_thread(move || {
-                hide_window(&window_for_main);
-                closing_for_main.store(false, std::sync::atomic::Ordering::SeqCst);
-            })
-            .is_err()
-        {
-            closing.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-    });
-}
-
 fn hide_creator_home_window_on_close(window: &WebviewWindow<tauri::Wry>) {
     let window_for_close = window.clone();
-    let closing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let closing_for_event = closing.clone();
 
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            // Keep creator-home WebView2 instances reusable on Windows. Do not hide or navigate
-            // synchronously inside CloseRequested; WebView2 can deadlock while the native close
-            // message is still being handled.
+            // Keep creator-home WebView2 instances reusable on Windows. The close path must stay
+            // deterministic: prevent native destruction and hide only. Navigation or destruction
+            // here can race with the next open or lock the WebView2 profile.
             api.prevent_close();
-            if !closing_for_event.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                schedule_hide_after_close_request(window_for_close.clone(), closing_for_event.clone());
-            }
+            hide_window(&window_for_close);
         }
     });
 }

@@ -127,9 +127,9 @@ fn open_creator_home_window(
                 eprintln!("[creator-home:{}] cookie injection failed: {error}", spec.platform_id);
             }
         }
-        let _ = window.navigate(url);
         let _ = window.show();
         let _ = window.set_focus();
+        let _ = window.navigate(url);
         return Ok(());
     }
 
@@ -161,9 +161,9 @@ fn open_creator_home_window(
         if let Err(error) = inject_creator_home_login_cookie(&window, spec.platform_id, login_cookie) {
             eprintln!("[creator-home:{}] cookie injection failed: {error}", spec.platform_id);
         }
-        let _ = window.navigate(url);
         let _ = window.show();
         let _ = window.set_focus();
+        let _ = window.navigate(url);
     }
 
     Ok(())
