@@ -1,5 +1,5 @@
 const { KoaApp, Notification } = require('@honeykid/ml');
-const router = require('./router');
+const router = require('./routers');
 const config = require('../config');
 
 const app = new KoaApp();

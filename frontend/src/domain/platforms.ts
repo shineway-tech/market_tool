@@ -14,7 +14,6 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "XHS",
     color: "#ff2442",
     description: "添加并管理多个小红书账号。",
-    supportsBuiltinOauth: false,
   },
   {
     id: "wechat-channels",
@@ -22,7 +21,6 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "WX",
     color: "#ff9f2e",
     description: "添加并管理多个微信视频号账号。",
-    supportsBuiltinOauth: true,
   },
   {
     id: "douyin",
@@ -30,7 +28,6 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "DY",
     color: "#111111",
     description: "添加并管理多个抖音账号。",
-    supportsBuiltinOauth: true,
   },
   {
     id: "bilibili",
@@ -38,7 +35,6 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "BILI",
     color: "#00a1d6",
     description: "添加并管理多个 B 站账号。",
-    supportsBuiltinOauth: true,
   },
   {
     id: "kuaishou",
@@ -46,7 +42,6 @@ export const fallbackPlatforms: PlatformInfo[] = [
     slug: "KS",
     color: "#ff4906",
     description: "添加并管理多个快手账号。",
-    supportsBuiltinOauth: true,
   },
 ];
 

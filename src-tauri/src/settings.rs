@@ -6,7 +6,7 @@ pub(super) fn normalize_settings(_settings: AuthSettings) -> AuthSettings {
 
 pub(super) fn default_auth_settings() -> AuthSettings {
     AuthSettings {
-        platforms: channels::all()
+        platforms: platforms::all()
             .into_iter()
             .map(|platform| creator_platform_auth(platform.id))
             .collect(),
@@ -27,7 +27,7 @@ pub(super) fn creator_platform_auth(platform_id: &str) -> PlatformAuthSettings {
 }
 
 pub(super) fn default_platforms() -> Vec<PlatformInfo> {
-    channels::all()
+    platforms::all()
         .into_iter()
         .map(|platform| PlatformInfo {
             id: platform.id.to_string(),
@@ -35,15 +35,6 @@ pub(super) fn default_platforms() -> Vec<PlatformInfo> {
             slug: platform.slug.to_string(),
             color: platform.color.to_string(),
             description: platform.description.to_string(),
-            supports_builtin_oauth: platform.supports_builtin_oauth,
         })
         .collect()
-}
-
-pub(super) fn platform_name(platform_id: &str) -> &'static str {
-    channels::platform_name(platform_id)
-}
-
-pub(super) fn normalize_platform_id(value: &str) -> String {
-    channels::normalize_platform_id(value)
 }

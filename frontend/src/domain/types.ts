@@ -45,7 +45,6 @@ export interface PlatformInfo {
   slug: string;
   color: string;
   description: string;
-  supportsBuiltinOauth: boolean;
 }
 
 export interface PlatformAuthSettings {
@@ -73,7 +72,6 @@ export interface ChannelAccount {
   followers?: number | null;
   likes?: number | null;
   status: AccountStatus;
-  relayAccountRef?: string | null;
   createdAt: string;
   updatedAt: string;
   lastSyncAt?: string | null;
@@ -91,7 +89,7 @@ export interface StartLoginResponse {
   url: string;
   callbackUrl: string;
   mode: AuthMode;
-  authType?: "oauth" | "qrcode" | string;
+  authType?: string;
   sessionId?: string | null;
   expiresAt?: string | null;
   instructions?: string | null;

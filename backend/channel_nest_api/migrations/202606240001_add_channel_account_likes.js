@@ -1,6 +1,10 @@
 module.exports = {
   async up(queryInterface, DataTypes, { transaction }) {
-    const table = await queryInterface.describeTable('mm_channel_accounts');
+    const table = await queryInterface.describeTable('mm_channel_accounts').catch(() => null);
+
+    if (!table) {
+      return;
+    }
 
     if (!table.likes) {
       await queryInterface.addColumn('mm_channel_accounts', 'likes', {
@@ -11,7 +15,11 @@ module.exports = {
   },
 
   async down(queryInterface, DataTypes, { transaction }) {
-    const table = await queryInterface.describeTable('mm_channel_accounts');
+    const table = await queryInterface.describeTable('mm_channel_accounts').catch(() => null);
+
+    if (!table) {
+      return;
+    }
 
     if (table.likes) {
       await queryInterface.removeColumn('mm_channel_accounts', 'likes', { transaction });

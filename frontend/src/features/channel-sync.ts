@@ -1,18 +1,5 @@
 import type { ChannelAccount } from "../domain/types";
 
-export function accountBackendPayload(account: ChannelAccount) {
-  return {
-    platform_id: account.platformId,
-    platform_uid: account.uid,
-    nickname: account.nickname,
-    avatar: account.avatar,
-    followers: account.followers ?? null,
-    likes: account.likes ?? null,
-    status: account.status,
-    homepage_url: "",
-  };
-}
-
 export function upsertAccount(
   accounts: ChannelAccount[],
   updated: ChannelAccount,
@@ -34,12 +21,4 @@ export function upsertAccount(
   }
 
   return [updated, ...nextAccounts];
-}
-
-export async function mirrorAccounts(
-  accounts: ChannelAccount[],
-  syncAccount: (account: ChannelAccount) => Promise<unknown>,
-) {
-  if (!accounts.length) return;
-  await Promise.allSettled(accounts.map(syncAccount));
 }

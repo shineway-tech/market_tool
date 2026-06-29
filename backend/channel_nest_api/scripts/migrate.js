@@ -3,7 +3,7 @@ const path = require('path');
 const mysql = require('mysql2/promise');
 const { DataTypes } = require('sequelize');
 const config = require('../config');
-const sequelize = require('../src/platform/sequelizor');
+const sequelize = require('../src/libs/sequelizor');
 
 const migrationsDir = path.resolve(__dirname, '..', 'migrations');
 const command = process.argv[2] || 'up';
