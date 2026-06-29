@@ -15,22 +15,14 @@ pub(super) fn channel_cookie_urls(platform_id: &str) -> &'static [&'static str] 
         .unwrap_or(&[])
 }
 
-pub(super) fn channel_web_url(platform_id: &str, url: &Url) -> bool {
-    channels::platform(platform_id)
-        .map(|item| item.matches_web_url(url))
-        .unwrap_or(false)
-}
-
 pub(super) fn account_homepage_url(account: &ChannelAccount) -> Result<String, String> {
     channel_platform(&account.platform_id)?.homepage_url(&account.uid, &account.nickname)
 }
 
 mod cookies;
-mod creator_home;
 mod lifecycle;
 mod plugin_auth;
 
 pub(super) use cookies::*;
-pub(super) use creator_home::*;
 pub(super) use lifecycle::*;
 pub(super) use plugin_auth::*;

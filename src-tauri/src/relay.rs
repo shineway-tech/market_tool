@@ -243,60 +243,6 @@ pub(crate) async fn fetch_aitoearn_accounts(relay: &RelaySettings) -> Result<Vec
     Ok(accounts)
 }
 
-pub(crate) async fn refresh_aitoearn_channel_account(
-    relay: &RelaySettings,
-    account: &ChannelAccount,
-) -> Result<ChannelAccount, String> {
-    let accounts = fetch_aitoearn_accounts(relay).await?;
-    let mut refreshed = accounts
-        .into_iter()
-        .find(|item| {
-            same_relay_account(item, account)
-                || (!account.uid.trim().is_empty() && item.uid == account.uid)
-        })
-        .ok_or_else(|| "快手 relay 账号不存在或授权已失效，请重新登录。".to_string())?;
-
-    if let Ok(Some(followers)) = refresh_aitoearn_account_analytics(relay, account).await {
-        refreshed.followers = Some(followers);
-    }
-    refreshed.user_id = account.user_id.clone();
-    refreshed.created_at = account.created_at;
-    refreshed.updated_at = Utc::now();
-    refreshed.last_sync_at = Some(Utc::now());
-    Ok(refreshed)
-}
-
-fn same_relay_account(left: &ChannelAccount, right: &ChannelAccount) -> bool {
-    match (
-        left.relay_account_ref.as_deref(),
-        right.relay_account_ref.as_deref(),
-    ) {
-        (Some(left), Some(right)) if left == right => true,
-        _ => false,
-    }
-}
-
-async fn refresh_aitoearn_account_analytics(
-    relay: &RelaySettings,
-    account: &ChannelAccount,
-) -> Result<Option<u64>, String> {
-    let Some(relay_account_id) = account.relay_account_ref.as_deref() else {
-        return Ok(None);
-    };
-    let value = aitoearn_get(
-        relay,
-        &format!(
-            "v2/channels/accounts/{}/analytics",
-            encode_path_segment(relay_account_id)
-        ),
-        &[],
-    )
-    .await?;
-    ensure_aitoearn_success(&value)?;
-    let data = relay_response_data(&value);
-    Ok(first_count(data, FOLLOWER_COUNT_KEYS).or_else(|| first_count(&value, FOLLOWER_COUNT_KEYS)))
-}
-
 pub(crate) async fn delete_aitoearn_account(
     relay: &RelaySettings,
     account: &ChannelAccount,

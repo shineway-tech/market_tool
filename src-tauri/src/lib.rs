@@ -10,7 +10,7 @@ use std::{
         Mutex,
     },
 };
-use tauri::{webview::Cookie, AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use url::{form_urlencoded, Url};
 use uuid::Uuid;
@@ -21,6 +21,7 @@ mod http_callback;
 mod json_ext;
 mod local_store;
 mod oauth;
+mod playwright_browser;
 mod plugin_accounts;
 mod relay;
 mod settings;
@@ -31,6 +32,7 @@ use http_callback::*;
 use json_ext::*;
 use local_store::*;
 use oauth::*;
+use playwright_browser::*;
 use plugin_accounts::*;
 use relay::*;
 use settings::*;
@@ -234,6 +236,7 @@ struct PendingAuth {
     platform_id: String,
     callback_url: String,
     plugin_window_label: Option<String>,
+    managed_browser_session: Option<ManagedBrowserAuthSession>,
     plugin_login_target: Option<String>,
     relay_platform_id: Option<String>,
     relay_session_id: Option<String>,
@@ -297,6 +300,7 @@ struct AuthTaskStatus {
 struct CreatorLoginSession {
     url: String,
     session_id: String,
+    managed_browser_session: Option<ManagedBrowserAuthSession>,
     expires_at: Option<String>,
     instructions: Option<String>,
     auth_type: String,
@@ -336,12 +340,18 @@ pub fn run() {
 
 #[tauri::command]
 async fn get_bootstrap(
+    app: AppHandle,
     state: State<'_, RuntimeState>,
     user_id: String,
 ) -> Result<Bootstrap, String> {
     let user_id = normalize_user_id(&user_id)?;
-    let store = state.store.lock().map_err(lock_error)?;
-    let settings = store.settings.clone();
+    let (settings, accounts) = {
+        let mut store = state.store.lock().map_err(lock_error)?;
+        if claim_legacy_accounts_for_user(&mut store, &user_id) {
+            persist_store(&app, &store)?;
+        }
+        (store.settings.clone(), user_accounts(&store, &user_id))
+    };
     let callback_base_url = state
         .callback_port
         .lock()
@@ -350,7 +360,7 @@ async fn get_bootstrap(
 
     Ok(Bootstrap {
         platforms: default_platforms(),
-        accounts: user_accounts(&store, &user_id),
+        accounts,
         settings,
         callback_base_url,
     })
@@ -358,11 +368,15 @@ async fn get_bootstrap(
 
 #[tauri::command]
 async fn list_channel_accounts(
+    app: AppHandle,
     state: State<'_, RuntimeState>,
     user_id: String,
 ) -> Result<Vec<ChannelAccount>, String> {
     let user_id = normalize_user_id(&user_id)?;
-    let store = state.store.lock().map_err(lock_error)?;
+    let mut store = state.store.lock().map_err(lock_error)?;
+    if claim_legacy_accounts_for_user(&mut store, &user_id) {
+        persist_store(&app, &store)?;
+    }
     Ok(user_accounts(&store, &user_id))
 }
 
@@ -398,7 +412,8 @@ async fn start_channel_login(
         .cloned()
         .ok_or_else(|| "未找到平台授权参数".to_string())?;
 
-    if normalized_platform_id == "kuaishou" {
+    let use_relay_login = false;
+    if use_relay_login && normalized_platform_id == "kuaishou" {
         let relay = aitoearn_relay_settings(&app);
         let relay_platform_id = aitoearn_platform_id(&normalized_platform_id)
             .ok_or_else(|| "当前平台不在 AiToEarn 支持列表中".to_string())?;
@@ -429,6 +444,7 @@ async fn start_channel_login(
                     platform_id: normalized_platform_id.clone(),
                     callback_url: callback_url.clone(),
                     plugin_window_label: None,
+                    managed_browser_session: None,
                     plugin_login_target: None,
                     relay_platform_id: Some(relay_platform_id.to_string()),
                     relay_session_id: Some(session.session_id.clone()),
@@ -470,6 +486,8 @@ async fn start_channel_login(
     let mut expires_at = None;
     let mut instructions = None;
     let mut auth_type = "oauth".to_string();
+    let mut managed_browser_session = None;
+    let mut login_session_id = None;
 
     let auth_url = match mode {
         AuthMode::Creator => {
@@ -481,12 +499,14 @@ async fn start_channel_login(
                 request.login_target.as_deref(),
             );
             let session =
-                open_plugin_login_window(&app, &platform_settings.platform_id, &task_id, target)?;
+                open_managed_browser_login_session(&app, &platform_settings.platform_id, &task_id, target)?;
             plugin_login_target = target.map(ToString::to_string);
-            plugin_window_label = Some(session.session_id.clone());
+            plugin_window_label = None;
+            login_session_id = Some(session.session_id.clone());
             expires_at = session.expires_at.clone();
             instructions = session.instructions.clone();
             auth_type = session.auth_type.clone();
+            managed_browser_session = session.managed_browser_session.clone();
             session.url
         }
         AuthMode::OAuth => create_direct_oauth_url(&platform_settings, &callback_url, &task_id)?,
@@ -501,6 +521,7 @@ async fn start_channel_login(
                 platform_id: request.platform_id.clone(),
                 callback_url: callback_url.clone(),
                 plugin_window_label: plugin_window_label.clone(),
+                managed_browser_session: managed_browser_session.clone(),
                 plugin_login_target: plugin_login_target.clone(),
                 relay_platform_id: None,
                 relay_session_id: None,
@@ -520,7 +541,7 @@ async fn start_channel_login(
         callback_url,
         mode,
         auth_type,
-        session_id: plugin_window_label,
+        session_id: login_session_id.or(plugin_window_label),
         expires_at,
         instructions,
     })
@@ -543,6 +564,121 @@ async fn get_auth_task_status(
         .cloned();
 
     if let Some(task) = pending_task.clone() {
+        if let Some(managed_session) = task.managed_browser_session.clone() {
+            match managed_browser_cookie_snapshot(&managed_session) {
+                Ok(Some(snapshot)) => {
+                    let profile_result = if normalize_platform_id(&task.platform_id) == "kuaishou" {
+                        collect_kuaishou_account_from_managed_browser(&managed_session, snapshot).await
+                    } else {
+                        collect_plugin_account_info_from_cookie(
+                            &task.platform_id,
+                            snapshot.cookie_header,
+                            snapshot.login_cookie,
+                            task.plugin_login_target.as_deref(),
+                        )
+                        .await
+                    };
+
+                    match profile_result {
+                        Ok(profile) => {
+                            if let Some(existing) =
+                                existing_plugin_account_for_profile(&app, &task.user_id, &task.platform_id, &profile)?
+                            {
+                                let account =
+                                    update_plugin_account_profile(&app, &task.user_id, &existing.id, &profile)?;
+                                upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
+                                let _ = upsert_account_webview_session(&app, &account.id, &managed_session.profile_id);
+                                close_managed_browser_auth_session(&managed_session);
+                                state
+                                    .pending_auth
+                                    .lock()
+                                    .map_err(lock_error)?
+                                    .remove(&task_id);
+                                return Ok(AuthTaskStatus {
+                                    task_id,
+                                    status: "success".to_string(),
+                                    account: Some(account),
+                                    message: None,
+                                });
+                            }
+
+                            let account = plugin_info_to_channel_account(&task.platform_id, &profile);
+                            let account = upsert_account_for_user(&app, &task.user_id, account)?;
+                            upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
+                            let _ = upsert_account_webview_session(&app, &account.id, &managed_session.profile_id);
+                            close_managed_browser_auth_session(&managed_session);
+                            state
+                                .pending_auth
+                                .lock()
+                                .map_err(lock_error)?
+                                .remove(&task_id);
+                            return Ok(AuthTaskStatus {
+                                task_id,
+                                status: "success".to_string(),
+                                account: Some(account),
+                                message: None,
+                            });
+                        }
+                        Err(PluginAuthError::NotLoggedIn(message)) => {
+                            return Ok(AuthTaskStatus {
+                                task_id,
+                                status: "pending".to_string(),
+                                account: None,
+                                message: Some(message),
+                            });
+                        }
+                        Err(PluginAuthError::Failed(message)) => {
+                            close_managed_browser_auth_session(&managed_session);
+                            state
+                                .pending_auth
+                                .lock()
+                                .map_err(lock_error)?
+                                .remove(&task_id);
+                            return Ok(AuthTaskStatus {
+                                task_id,
+                                status: "failed".to_string(),
+                                account: None,
+                                message: Some(message),
+                            });
+                        }
+                    }
+                }
+                Ok(None) => {
+                    return Ok(AuthTaskStatus {
+                        task_id,
+                        status: "pending".to_string(),
+                        account: None,
+                        message: Some("请先在打开的浏览器窗口完成登录。".to_string()),
+                    });
+                }
+                Err(message) => {
+                    let browser_closed = message.contains("授权浏览器已关闭");
+                    let task_age_seconds = Utc::now()
+                        .signed_duration_since(task.created_at)
+                        .num_seconds();
+                    if browser_closed && task_age_seconds > 8 {
+                        state
+                            .pending_auth
+                            .lock()
+                            .map_err(lock_error)?
+                            .remove(&task_id);
+                        return Ok(AuthTaskStatus {
+                            task_id,
+                            status: "failed".to_string(),
+                            account: None,
+                            message: Some(message),
+                        });
+                    }
+                    return Ok(AuthTaskStatus {
+                        task_id,
+                        status: "pending".to_string(),
+                        account: None,
+                        message: Some(message),
+                    });
+                }
+            }
+        }
+
         if let Some(window_label) = task.plugin_window_label.clone() {
             match collect_plugin_account_info(
                 &app,
@@ -556,33 +692,23 @@ async fn get_auth_task_status(
                     if let Some(existing) =
                         existing_plugin_account_for_profile(&app, &task.user_id, &task.platform_id, &profile)?
                     {
-                        if !matches!(existing.status, AccountStatus::Active) {
-                            let account =
-                                update_plugin_account_profile(&app, &task.user_id, &existing.id, &profile)?;
-                            let _ = upsert_account_webview_session(&app, &account.id, &task_id);
-                            if let Some(window) = app.get_webview_window(&window_label) {
-                                destroy_webview_window(&window);
-                            }
-                            state
-                                .pending_auth
-                                .lock()
-                                .map_err(lock_error)?
-                                .remove(&task_id);
-                            return Ok(AuthTaskStatus {
-                                task_id,
-                                status: "success".to_string(),
-                                account: Some(account),
-                                message: None,
-                            });
+                        let account =
+                            update_plugin_account_profile(&app, &task.user_id, &existing.id, &profile)?;
+                        upsert_account_secret(&app, &account.id, &profile.login_cookie)?;
+                        let _ = upsert_account_webview_session(&app, &account.id, &task_id);
+                        if let Some(window) = app.get_webview_window(&window_label) {
+                            destroy_webview_window(&window);
                         }
+                        state
+                            .pending_auth
+                            .lock()
+                            .map_err(lock_error)?
+                            .remove(&task_id);
                         return Ok(AuthTaskStatus {
                             task_id,
-                            status: "pending".to_string(),
-                            account: None,
-                            message: Some(format!(
-                                "当前窗口登录的是已添加账号「{}」。如需添加第二个账号，请在该窗口退出当前账号后再登录新账号。",
-                                existing.nickname
-                            )),
+                            status: "success".to_string(),
+                            account: Some(account),
+                            message: None,
                         });
                     }
 
@@ -741,6 +867,66 @@ async fn get_auth_task_status(
     })
 }
 
+async fn collect_kuaishou_account_from_managed_browser(
+    managed_session: &ManagedBrowserAuthSession,
+    snapshot: ManagedBrowserCookieSnapshot,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    if !has_kuaishou_creator_login_cookie_header(&snapshot.cookie_header) {
+        return Err(PluginAuthError::NotLoggedIn(
+            "请先在打开的快手窗口完成登录。".to_string(),
+        ));
+    }
+
+    if !page_url_is_kuaishou_creator_home(&snapshot.page_url) {
+        let url = creator_home_url("kuaishou", "快手创作者中心").map_err(PluginAuthError::Failed)?;
+        managed_browser_navigate(managed_session, url.as_str())
+            .map_err(|error| PluginAuthError::NotLoggedIn(format!("正在进入快手创作者中心，请稍候。{error}")))?;
+        return Err(PluginAuthError::NotLoggedIn(
+            "已检测到快手登录态，正在进入快手创作者中心，请稍候。".to_string(),
+        ));
+    }
+
+    let page_snapshot = managed_browser_kuaishou_profile_snapshot(managed_session).ok();
+    match managed_browser_fetch_kuaishou_home_info(managed_session) {
+        Ok(value) => {
+            match collect_kuaishou_plugin_account_from_browser_context(value, snapshot.login_cookie.clone()).await {
+                Ok(profile) => Ok(profile),
+                Err(PluginAuthError::NotLoggedIn(message)) => {
+                    eprintln!("[managed-auth:kuaishou] creator api not logged in, using cookie fallback: {message}");
+                    collect_kuaishou_plugin_account_from_cookie_fallback(
+                        &snapshot.cookie_header,
+                        snapshot.login_cookie,
+                        page_snapshot,
+                    )
+                    .await
+                    .map_err(PluginAuthError::NotLoggedIn)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(message) => {
+            eprintln!("[managed-auth:kuaishou] creator api request failed, using cookie fallback: {message}");
+            collect_kuaishou_plugin_account_from_cookie_fallback(
+                &snapshot.cookie_header,
+                snapshot.login_cookie,
+                page_snapshot,
+            )
+            .await
+            .map_err(PluginAuthError::NotLoggedIn)
+        }
+    }
+}
+
+fn page_url_is_kuaishou_creator_home(raw_url: &str) -> bool {
+    let Ok(url) = Url::parse(raw_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str().map(|host| host.to_ascii_lowercase()) else {
+        return false;
+    };
+    host == "cp.kuaishou.com" && url.path().starts_with("/profile")
+}
+
 #[tauri::command]
 async fn refresh_channel_account(
     app: AppHandle,
@@ -760,11 +946,6 @@ async fn refresh_channel_account(
     let account = existing
         .as_ref()
         .ok_or_else(|| "账号不存在".to_string())?;
-    if normalize_platform_id(&account.platform_id) == "kuaishou" {
-        let relay = aitoearn_relay_settings(&app);
-        let refreshed = refresh_aitoearn_channel_account(&relay, account).await?;
-        return upsert_account_for_user(&app, &user_id, refreshed);
-    }
     let (secret_cookie, secret_webview_session_id) = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let migrated = migrate_account_secret_for_account(&mut store, account);
@@ -863,7 +1044,7 @@ async fn open_account_homepage(
     user_id: String,
 ) -> Result<ChannelAccount, String> {
     let user_id = normalize_user_id(&user_id)?;
-    let (account, saved_login_cookie, saved_webview_session_id) = {
+    let (mut account, mut saved_login_cookie, mut saved_webview_session_id) = {
         let mut store = state.store.lock().map_err(lock_error)?;
         let account = store
             .accounts
@@ -874,7 +1055,7 @@ async fn open_account_homepage(
         let migrated = migrate_account_secret_for_account(&mut store, &account);
         let secret = account_secret_for_account(&store, &account);
         let saved_login_cookie = secret.as_ref().and_then(|secret| secret.login_cookie.clone());
-        let saved_webview_session_id = secret.and_then(|secret| secret.webview_session_id);
+        let saved_webview_session_id = secret.as_ref().and_then(|secret| secret.webview_session_id.clone());
         if migrated {
             persist_store(&app, &store)?;
         }
@@ -882,8 +1063,33 @@ async fn open_account_homepage(
     }
     ?;
 
-    if creator_home_uses_webview(&account.platform_id) {
-        open_creator_homepage_webview(
+    if creator_home_uses_managed_browser(&account.platform_id) {
+        match check_creator_session(
+            &app,
+            &account,
+            saved_login_cookie.as_deref(),
+            saved_webview_session_id.as_deref(),
+        )
+        .await
+        {
+            Ok(session) => {
+                if let Some(profile) = session.profile.as_ref() {
+                    account = update_plugin_account_profile(&app, &user_id, &account.id, profile)?;
+                }
+                if let Some(login_cookie) = session.login_cookie {
+                    saved_login_cookie = Some(login_cookie);
+                }
+                if let Some(webview_session_id) = session.webview_session_id {
+                    saved_webview_session_id = Some(webview_session_id.clone());
+                    let _ = upsert_account_webview_session(&app, &account.id, &webview_session_id);
+                }
+            }
+            Err(error) => {
+                let _ = mark_account_expired(&app, &account.id);
+                return Err(error);
+            }
+        }
+        open_creator_homepage_managed_browser(
             app.clone(),
             account.clone(),
             saved_login_cookie,

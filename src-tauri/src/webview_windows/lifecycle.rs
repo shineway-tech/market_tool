@@ -18,7 +18,3 @@ pub(crate) fn destroy_webview_window(window: &WebviewWindow<tauri::Wry>) {
 pub(crate) fn prepare_external_webview_window(window: &WebviewWindow<tauri::Wry>) {
     ensure_close_controls(window);
 }
-
-pub(crate) fn prepare_creator_home_window(window: &WebviewWindow<tauri::Wry>) {
-    ensure_close_controls(window);
-}

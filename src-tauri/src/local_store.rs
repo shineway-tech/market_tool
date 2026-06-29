@@ -197,6 +197,21 @@ pub(super) fn user_accounts(store: &StoreFile, user_id: &str) -> Vec<ChannelAcco
         .collect()
 }
 
+pub(super) fn claim_legacy_accounts_for_user(store: &mut StoreFile, user_id: &str) -> bool {
+    let user_id = user_id.trim();
+    if user_id.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for account in &mut store.accounts {
+        if account.user_id.is_none() {
+            account.user_id = Some(user_id.to_string());
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub(super) fn account_secret_for_account(store: &StoreFile, account: &ChannelAccount) -> Option<AccountSecret> {
     account_secret_candidates(account)
         .into_iter()

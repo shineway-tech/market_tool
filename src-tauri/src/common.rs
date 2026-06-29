@@ -14,15 +14,6 @@ pub(super) fn stable_label_fragment(value: &str) -> String {
     format!("{:016x}", stable_hash(value, 0xcbf29ce484222325))
 }
 
-pub(super) fn stable_data_store_identifier(value: &str) -> [u8; 16] {
-    let first = stable_hash(value, 0xcbf29ce484222325);
-    let second = stable_hash(value, 0x84222325cbf29ce4);
-    let mut bytes = [0_u8; 16];
-    bytes[..8].copy_from_slice(&first.to_le_bytes());
-    bytes[8..].copy_from_slice(&second.to_le_bytes());
-    bytes
-}
-
 pub(super) fn stable_hash(value: &str, seed: u64) -> u64 {
     value.as_bytes().iter().fold(seed, |hash, byte| {
         (hash ^ (*byte as u64)).wrapping_mul(0x100000001b3)

@@ -32,7 +32,6 @@ pub(super) static SPEC: ChannelPlatform = ChannelPlatform {
     cookie_urls: COOKIE_URLS,
     default_cookie_domain: ".kuaishou.com",
     cookie_domains: COOKIE_DOMAINS,
-    web_domains: COOKIE_DOMAINS,
     login_cookie_names: &[],
     homepage_kind: HomepageKind::KuaishouProfileOrSearch,
     plugin_auth: true,

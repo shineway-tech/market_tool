@@ -1,6 +1,6 @@
 [package]
 name = "channel-nest"
-version = "1.0.19"
+version = "1.0.20"
 description = "Channel Nest desktop client"
 authors = ["fanxiao"]
 edition = "2021"

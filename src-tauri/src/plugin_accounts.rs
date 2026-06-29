@@ -130,7 +130,13 @@ pub(crate) async fn check_creator_session(
         "kuaishou" => {
             let (cookie_header, login_cookie) =
                 saved_cookie_header(saved_login_cookie, "快手网页登录态已失效，请重新登录后再打开创作中心。")?;
-            let profile = fetch_kuaishou_creator_account_from_cookie(&cookie_header, login_cookie.clone()).await?;
+            let profile = match fetch_kuaishou_creator_account_from_cookie(&cookie_header, login_cookie.clone()).await {
+                Ok(profile) => profile,
+                Err(error) => {
+                    eprintln!("[creator-session:kuaishou] creator api fallback after error: {error}");
+                    collect_kuaishou_plugin_account_from_cookie_fallback(&cookie_header, login_cookie.clone(), None).await?
+                }
+            };
             Ok(CreatorSessionStatus {
                 login_cookie: Some(login_cookie),
                 webview_session_id: saved_webview_session_id.map(ToString::to_string),
@@ -586,6 +592,139 @@ pub(crate) async fn collect_plugin_account_info(
     }
 }
 
+pub(crate) async fn collect_plugin_account_info_from_cookie(
+    platform_id: &str,
+    cookie_header: String,
+    login_cookie: String,
+    login_target: Option<&str>,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    if cookie_header.trim().is_empty() || login_cookie.trim().is_empty() {
+        return Err(PluginAuthError::NotLoggedIn(match normalize_platform_id(platform_id).as_str() {
+            "xiaohongshu" => match login_target {
+                Some("home") => "请先在打开的小红书主页完成登录。".to_string(),
+                _ => "请先在打开的小红书创作中心完成登录。".to_string(),
+            },
+            "wechat-channels" => "请先在打开的视频号窗口完成登录。".to_string(),
+            "bilibili" => "请先在打开的 B 站窗口完成登录。".to_string(),
+            "douyin" => "请先在打开的抖音创作者中心完成登录。".to_string(),
+            "kuaishou" => "请先在打开的快手创作者中心完成登录。".to_string(),
+            _ => "请先在打开的平台窗口完成登录。".to_string(),
+        }));
+    }
+
+    match normalize_platform_id(platform_id).as_str() {
+        "xiaohongshu" => fetch_xhs_plugin_account_from_cookie(&cookie_header, login_cookie, login_target).await,
+        "wechat-channels" => {
+            if !cookie_header
+                .split(';')
+                .any(|item| item.trim_start().to_ascii_lowercase().contains("sessionid="))
+            {
+                return Err(PluginAuthError::NotLoggedIn(
+                    "请先在打开的视频号窗口完成登录。".to_string(),
+                ));
+            }
+            fetch_wx_channels_account_from_cookie(&cookie_header, login_cookie).await
+        }
+        "bilibili" => probe_bilibili_creator_session(&cookie_header, login_cookie)
+            .await
+            .map_err(PluginAuthError::NotLoggedIn),
+        "douyin" => {
+            if !has_douyin_login_cookie(&login_cookie) {
+                return Err(PluginAuthError::NotLoggedIn(
+                    "请先在打开的抖音创作者中心完成登录。".to_string(),
+                ));
+            }
+            fetch_douyin_creator_account_from_cookie(&cookie_header, login_cookie)
+                .await
+                .map_err(PluginAuthError::Failed)
+        }
+        "kuaishou" => {
+            match fetch_kuaishou_creator_account_from_cookie(&cookie_header, login_cookie.clone()).await {
+                Ok(profile) => Ok(profile),
+                Err(error) => {
+                    eprintln!("[plugin-auth:kuaishou] creator api fallback after error: {error}");
+                    collect_kuaishou_plugin_account_from_cookie_fallback(&cookie_header, login_cookie, None)
+                        .await
+                        .map_err(PluginAuthError::NotLoggedIn)
+                }
+            }
+        }
+        _ => Err(PluginAuthError::Failed("当前平台不支持浏览器授权".to_string())),
+    }
+}
+
+pub(crate) async fn collect_kuaishou_plugin_account_from_browser_context(
+    value: Value,
+    login_cookie: String,
+) -> Result<PluginAccountInfo, PluginAuthError> {
+    parse_kuaishou_creator_account(value, login_cookie)
+        .await
+        .map_err(PluginAuthError::NotLoggedIn)
+}
+
+pub(crate) async fn collect_kuaishou_plugin_account_from_cookie_fallback(
+    cookie_header: &str,
+    login_cookie: String,
+    page_snapshot: Option<Value>,
+) -> Result<PluginAccountInfo, String> {
+    if !has_kuaishou_creator_login_cookie_header(cookie_header) {
+        return Err("请先在打开的快手创作者中心完成登录。".to_string());
+    }
+    let uid = cookie_value_from_header(cookie_header, &["userId", "bUserId"])
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "快手登录态缺少账号标识，请重新登录。".to_string())?;
+    let snapshot = page_snapshot.as_ref();
+    let nickname = snapshot
+        .and_then(|value| {
+            first_string_deep(
+                value,
+                &[
+                    "userName",
+                    "nickname",
+                    "nickName",
+                    "name",
+                    "displayName",
+                    "authorName",
+                    "profileName",
+                ],
+            )
+        })
+        .or_else(|| snapshot.and_then(kuaishou_snapshot_candidate_name))
+        .unwrap_or_else(|| {
+            let suffix = uid.chars().rev().take(4).collect::<String>();
+            let suffix = suffix.chars().rev().collect::<String>();
+            format!("快手账号 {suffix}")
+        });
+    let avatar = snapshot
+        .and_then(|value| {
+            first_profile_image(
+                value,
+                &[
+                    "userAvatar",
+                    "avatar",
+                    "avatarUrl",
+                    "avatar_url",
+                    "headUrl",
+                    "head_url",
+                    "src",
+                ],
+            )
+        })
+        .unwrap_or_default();
+    let avatar = materialize_account_avatar("kuaishou", avatar).await;
+    let fans_count = snapshot.and_then(kuaishou_snapshot_fans_count);
+    let like_count = snapshot.and_then(kuaishou_snapshot_like_count);
+    Ok(PluginAccountInfo {
+        uid: uid.clone(),
+        account: uid,
+        nickname,
+        avatar,
+        fans_count,
+        like_count,
+        login_cookie,
+    })
+}
+
 async fn collect_bilibili_plugin_account(
     window: &WebviewWindow<tauri::Wry>,
 ) -> Result<PluginAccountInfo, PluginAuthError> {
@@ -810,7 +949,7 @@ async fn collect_kuaishou_plugin_account(
         .map_err(PluginAuthError::NotLoggedIn)
 }
 
-fn has_kuaishou_creator_login_cookie_header(cookie_header: &str) -> bool {
+pub(crate) fn has_kuaishou_creator_login_cookie_header(cookie_header: &str) -> bool {
     cookie_header.split(';').any(|pair| {
         let Some((name, value)) = pair.trim().split_once('=') else {
             return false;
@@ -972,6 +1111,176 @@ fn cookie_names_from_header(cookie_header: &str) -> Vec<String> {
         .take(50)
         .map(ToString::to_string)
         .collect()
+}
+
+fn cookie_value_from_header(cookie_header: &str, names: &[&str]) -> Option<String> {
+    cookie_header.split(';').find_map(|pair| {
+        let (name, value) = pair.trim().split_once('=')?;
+        if names.iter().any(|item| name.trim().eq_ignore_ascii_case(item)) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        None
+    })
+}
+
+fn kuaishou_snapshot_candidate_name(value: &Value) -> Option<String> {
+    let nodes = value.get("textNodes").and_then(Value::as_array)?;
+    nodes.iter().find_map(|node| {
+        let class_name = node
+            .get("className")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !["name", "nick", "user", "profile", "author"]
+            .iter()
+            .any(|keyword| class_name.contains(keyword))
+        {
+            return None;
+        }
+        let text = node.get("text").and_then(Value::as_str)?.trim();
+        if text.is_empty()
+            || text.len() > 40
+            || text.contains("创作者")
+            || text.contains("快手")
+            || text.contains("登录")
+            || text.contains("粉丝")
+            || text.contains("作品")
+        {
+            return None;
+        }
+        Some(text.to_string())
+    })
+}
+
+fn kuaishou_snapshot_fans_count(value: &Value) -> Option<u64> {
+    first_count(value, FOLLOWER_COUNT_KEYS)
+        .or_else(|| kuaishou_count_near_keywords(value, &["粉丝数", "粉丝", "关注者", "fans", "followers"]))
+}
+
+fn kuaishou_snapshot_like_count(value: &Value) -> Option<u64> {
+    first_count(value, LIKE_COUNT_KEYS)
+        .or_else(|| kuaishou_count_near_keywords(value, &["获赞", "点赞", "赞", "likes"]))
+}
+
+fn kuaishou_count_near_keywords(value: &Value, keywords: &[&str]) -> Option<u64> {
+    kuaishou_snapshot_text_values(value)
+        .into_iter()
+        .find_map(|text| count_near_keywords(&text, keywords))
+}
+
+fn kuaishou_snapshot_text_values(value: &Value) -> Vec<String> {
+    let mut result = Vec::new();
+    if let Some(body_text) = value.get("bodyText").and_then(Value::as_str) {
+        result.push(body_text.to_string());
+    }
+    for key in ["visibleTexts", "textNodes", "localStorage", "sessionStorage"] {
+        collect_snapshot_texts(value.get(key), &mut result);
+    }
+    result
+}
+
+fn collect_snapshot_texts(value: Option<&Value>, output: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                output.push(trimmed.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_snapshot_texts(Some(item), output);
+            }
+        }
+        Value::Object(map) => {
+            for field in ["text", "value", "title", "label", "name"] {
+                if let Some(text) = map.get(field).and_then(Value::as_str) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        output.push(trimmed.to_string());
+                    }
+                }
+            }
+            if let Some(json) = map.get("json") {
+                collect_snapshot_texts(Some(json), output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn count_near_keywords(text: &str, keywords: &[&str]) -> Option<u64> {
+    let lower = text.to_ascii_lowercase();
+    for keyword in keywords {
+        let keyword_lower = keyword.to_ascii_lowercase();
+        let mut search_start = 0;
+        while let Some(relative_index) = lower[search_start..].find(&keyword_lower) {
+            let index = search_start + relative_index;
+            let after_start = index + keyword_lower.len();
+            let after = text.get(after_start..).unwrap_or_default();
+            if let Some(count) = first_count_fragment(after, 32) {
+                return Some(count);
+            }
+            let before = text.get(..index).unwrap_or_default();
+            if let Some(count) = last_count_fragment(before, 32) {
+                return Some(count);
+            }
+            search_start = after_start;
+            if search_start >= lower.len() {
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn first_count_fragment(text: &str, max_chars: usize) -> Option<u64> {
+    count_fragments(text, max_chars).into_iter().next()
+}
+
+fn last_count_fragment(text: &str, max_chars: usize) -> Option<u64> {
+    let mut tail = text.chars().rev().take(max_chars).collect::<Vec<_>>();
+    tail.reverse();
+    let limited = tail.into_iter().collect::<String>();
+    count_fragments(&limited, max_chars).into_iter().last()
+}
+
+fn count_fragments(text: &str, max_chars: usize) -> Vec<u64> {
+    let limited = text.chars().take(max_chars).collect::<String>();
+    let mut result = Vec::new();
+    let mut current = String::new();
+    for ch in limited.chars() {
+        if ch.is_ascii_digit() || (!current.is_empty() && count_fragment_char_allowed(ch)) {
+            current.push(ch);
+            continue;
+        }
+        if !current.is_empty() {
+            if let Some(count) = parse_count_string(&current) {
+                result.push(count);
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        if let Some(count) = parse_count_string(&current) {
+            result.push(count);
+        }
+    }
+    result
+}
+
+fn count_fragment_char_allowed(ch: char) -> bool {
+    ch.is_ascii_digit()
+        || matches!(
+            ch,
+            '.' | ',' | '，' | ' ' | '\u{00a0}' | '万' | '億' | '亿' | 'k' | 'K' | 'w' | 'W'
+        )
 }
 
 fn sanitize_sensitive_url(raw: &str) -> String {

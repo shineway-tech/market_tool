@@ -37,7 +37,6 @@ pub(super) static SPEC: ChannelPlatform = ChannelPlatform {
     cookie_urls: COOKIE_URLS,
     default_cookie_domain: ".douyin.com",
     cookie_domains: COOKIE_DOMAINS,
-    web_domains: COOKIE_DOMAINS,
     login_cookie_names: LOGIN_COOKIE_NAMES,
     homepage_kind: HomepageKind::Creator,
     plugin_auth: true,

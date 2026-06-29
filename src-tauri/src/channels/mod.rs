@@ -1,4 +1,4 @@
-use url::{form_urlencoded, Url};
+use url::form_urlencoded;
 
 mod bilibili;
 mod douyin;
@@ -31,7 +31,6 @@ pub(crate) struct ChannelPlatform {
     pub(crate) cookie_urls: &'static [&'static str],
     pub(crate) default_cookie_domain: &'static str,
     pub(crate) cookie_domains: &'static [DomainRule],
-    pub(crate) web_domains: &'static [DomainRule],
     pub(crate) login_cookie_names: &'static [&'static str],
     pub(crate) homepage_kind: HomepageKind,
     pub(crate) plugin_auth: bool,
@@ -66,14 +65,6 @@ impl ChannelPlatform {
     pub(crate) fn allows_cookie_domain(&self, domain: &str) -> bool {
         let domain = normalize_domain(domain);
         domain.is_empty() || self.cookie_domains.iter().any(|rule| domain_matches(&domain, rule))
-    }
-
-    pub(crate) fn matches_web_url(&self, url: &Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-        let host = normalize_domain(host);
-        self.web_domains.iter().any(|rule| domain_matches(&host, rule))
     }
 
     pub(crate) fn is_login_cookie_name(&self, name: &str) -> bool {
