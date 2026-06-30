@@ -25,28 +25,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reset draft release for tag
+      - name: Reset release for tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          release_json="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft 2>/dev/null || true)"
-          if [ -n "$release_json" ]; then
-            is_draft="$(printf '%s' "$release_json" | jq -r '.isDraft')"
-            if [ "$is_draft" = "true" ]; then
-              gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
-            else
-              echo "Release $GITHUB_REF_NAME already exists and is not a draft. Refusing to delete it."
-              exit 1
-            fi
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
           fi
 
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "Channel Nest $GITHUB_REF_NAME" \
-            --notes "Desktop release for Channel Nest. Installers and updater packages are uploaded to OSS; GitHub only exposes the source code archives."
+            --notes "First desktop release for Channel Nest. Installers and updater packages are uploaded to OSS; GitHub only exposes the source code archives."
 
   build-macos:
     name: Build ${{ matrix.name }}

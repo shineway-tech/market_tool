@@ -64,8 +64,8 @@ export class UpdateController {
     this.autoChecked = false;
     localStorage.setItem(AUTO_UPDATE_KEY, String(enabled));
     const text = this.options.getText();
-    this.options.showToast(enabled ? text.autoUpdateOn : text.autoUpdateOff);
     this.options.render();
+    this.options.showToast(enabled ? text.autoUpdateOn : text.autoUpdateOff);
   }
 
   toggleRelease(version: string) {
@@ -105,8 +105,8 @@ export class UpdateController {
           status: "latest",
           downloadedBytes: 0,
         };
-        if (!options.silent) this.options.showToast(text.latestVersion);
         this.options.render();
+        if (!options.silent) this.options.showToast(text.latestVersion);
         return;
       }
 
@@ -117,8 +117,8 @@ export class UpdateController {
         notes: update.body,
         downloadedBytes: 0,
       };
-      if (!options.silent) this.options.showToast(this.statusText());
       this.options.render();
+      if (!options.silent) this.options.showToast(this.statusText());
     } catch (error) {
       const text = this.options.getText();
       this.state = {
@@ -126,8 +126,8 @@ export class UpdateController {
         downloadedBytes: 0,
         error: this.normalizeUpdateError(error),
       };
-      if (!options.silent) this.options.showToast(this.state.error || text.updateFailed);
       this.options.render();
+      if (!options.silent) this.options.showToast(this.state.error || text.updateFailed);
     }
   }
 
@@ -178,8 +178,8 @@ export class UpdateController {
         downloadedBytes: contentLength || downloadedBytes,
         contentLength,
       };
-      this.options.showToast(this.options.getText().updateInstalled);
       this.options.render();
+      this.options.showToast(this.options.getText().updateInstalled);
       await relaunch();
     } catch (error) {
       const text = this.options.getText();
@@ -188,8 +188,8 @@ export class UpdateController {
         downloadedBytes: 0,
         error: this.normalizeUpdateError(error),
       };
-      this.options.showToast(this.state.error || text.updateFailed);
       this.options.render();
+      this.options.showToast(this.state.error || text.updateFailed);
     }
   }
 
