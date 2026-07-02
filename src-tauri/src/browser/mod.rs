@@ -577,216 +577,6 @@ pub(crate) fn managed_browser_fetch_kuaishou_home_info_headless(
     result
 }
 
-#[allow(dead_code)]
-pub(crate) fn managed_browser_fetch_xhs_account_content_headless(login_cookie: &str) -> Result<Value, String> {
-    let script = xhs_creator_client_script("account", None)?;
-    managed_browser_fetch_xhs_json_headless(login_cookie, &script, "小红书账号数据")
-}
-
-#[allow(dead_code)]
-pub(crate) fn managed_browser_fetch_xhs_works_page_headless(
-    login_cookie: &str,
-    page_key: &str,
-) -> Result<Value, String> {
-    let script = xhs_creator_client_script("works", Some(page_key))?;
-    managed_browser_fetch_xhs_json_headless(login_cookie, &script, "小红书作品列表")
-}
-
-#[allow(dead_code)]
-fn managed_browser_fetch_xhs_json_headless(
-    login_cookie: &str,
-    script: &str,
-    label: &str,
-) -> Result<Value, String> {
-    let platform = platforms::platform("xiaohongshu").ok_or_else(|| "当前平台暂不支持".to_string())?;
-    let browser_path = find_chromium_browser()
-        .ok_or_else(|| format!("未找到 Chrome、Edge 或 Chromium，无法同步{label}。"))?;
-    let user_data_dir = std::env::temp_dir().join(format!("market-tool-xhs-sync-{}", Uuid::new_v4()));
-    fs::create_dir_all(&user_data_dir).map_err(|error| format!("创建小红书临时浏览器目录失败: {error}"))?;
-    let remote_debugging_port = allocate_local_port()?;
-    let mut command = Command::new(&browser_path);
-    command
-        .arg(format!("--user-data-dir={}", user_data_dir.display()))
-        .arg(format!("--remote-debugging-port={remote_debugging_port}"))
-        .arg("--headless=new")
-        .arg("--disable-gpu")
-        .arg("--no-first-run")
-        .arg("--no-default-browser-check")
-        .arg("--disable-features=Translate")
-        .arg("--window-size=1280,900")
-        .arg("about:blank");
-    let child = command
-        .spawn()
-        .map_err(|error| format!("启动小红书后台同步浏览器失败: {error}"))?;
-    let session = ManagedBrowserAuthSession {
-        session_id: format!("managed-sync-xhs-{}", task_suffix(&Uuid::new_v4().to_string())),
-        profile_id: String::new(),
-        platform_id: platform.id.to_string(),
-        login_url: platform.creator_home_url.to_string(),
-        remote_debugging_port,
-        process_id: child.id(),
-    };
-
-    let result = (|| {
-        let websocket_url = wait_for_page_websocket(remote_debugging_port, "about:blank")?;
-        let mut client = DevtoolsClient::connect(&websocket_url)?;
-        client.call("Network.enable", serde_json::json!({}))?;
-        client.call("Page.enable", serde_json::json!({}))?;
-        let cookies = login_cookie_to_cdp_cookies(platform.id, login_cookie)?;
-        let (written, failed) = set_cdp_cookies(&mut client, &cookies);
-        eprintln!(
-            "[managed-auth:xiaohongshu] cookie_write written={} failed={}",
-            written,
-            failed
-        );
-        if !cookies.is_empty() && written == 0 {
-            return Err("小红书登录 Cookie 写入后台浏览器失败".to_string());
-        }
-        client.call("Page.navigate", serde_json::json!({ "url": platform.creator_home_url }))?;
-        wait_for_target_page_websocket(remote_debugging_port, platform.creator_home_url)?;
-        std::thread::sleep(Duration::from_millis(1_500));
-        let value = managed_browser_eval_json(&session, script)?;
-        let ok = value
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or_else(|| value.get("error").is_none());
-        let source = value.get("source").and_then(Value::as_str).unwrap_or_default();
-        let url = value.get("href").and_then(Value::as_str).unwrap_or_default();
-        eprintln!(
-            "[managed-auth:xiaohongshu] browser fetch label={label} source={source} ok={ok} url={}",
-            sanitize_sensitive_url_for_log(url)
-        );
-        if !ok {
-            let message = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("小红书页面客户端请求失败");
-            return Err(message.to_string());
-        }
-        Ok(value)
-    })();
-    close_managed_browser_auth_session(&session);
-    let _ = fs::remove_dir_all(&user_data_dir);
-    result
-}
-
-#[allow(dead_code)]
-fn xhs_creator_client_script(kind: &str, page_key: Option<&str>) -> Result<String, String> {
-    let kind_json = serde_json::to_string(kind).map_err(|error| format!("小红书请求类型序列化失败: {error}"))?;
-    let page_key_json =
-        serde_json::to_string(&page_key.unwrap_or("")).map_err(|error| format!("小红书页码序列化失败: {error}"))?;
-    Ok(r#"
-        (async () => {
-          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          const kind = __KIND__;
-          const pageKey = __PAGE_KEY__;
-
-          function getWebpackRequire() {
-            if (!window.webpackChunkugc) {
-              return null;
-            }
-            let req = null;
-            window.webpackChunkugc.push([[Date.now()], {}, function (r) { req = r; }]);
-            return req;
-          }
-
-          async function getClient() {
-            for (let index = 0; index < 100; index += 1) {
-              const req = getWebpackRequire();
-              if (req) {
-                try {
-                  const module = req(11237);
-                  if (module && module.LV && typeof module.LV.get === "function") {
-                    return { req, client: module, source: "module:11237" };
-                  }
-                } catch (error) {
-                  // Module ids are build-specific; scan the loaded cache below.
-                }
-                const cache = req.c || {};
-                for (const key of Object.keys(cache)) {
-                  const exports = cache[key] && cache[key].exports;
-                  if (exports && exports.LV && typeof exports.LV.get === "function") {
-                    return { req, client: exports, source: `cache:${key}` };
-                  }
-                }
-              }
-              await sleep(250);
-            }
-            return null;
-          }
-
-          function errorText(error) {
-            if (!error) return "unknown";
-            if (typeof error === "string") return error;
-            const response = error.response || {};
-            const data = response.data || error.data || {};
-            return data.msg || data.message || error.message || String(error);
-          }
-
-          async function getByKey(client, key, params) {
-            if (params) {
-              return await client.LV.get(key, { params });
-            }
-            return await client.LV.get(key);
-          }
-
-          try {
-            for (let index = 0; index < 120; index += 1) {
-              if (document.readyState === "complete" || document.readyState === "interactive") {
-                break;
-              }
-              await sleep(250);
-            }
-            const resolved = await getClient();
-            if (!resolved) {
-              return { ok: false, href: location.href, error: "小红书页面请求客户端未加载完成" };
-            }
-            const client = resolved.client;
-            if (kind === "works") {
-              const params = { tab: 0 };
-              if (pageKey) {
-                params.page = pageKey;
-              }
-              const postedNotes = await getByKey(client, "USER_POSTED_NOTES", params);
-              return {
-                ok: true,
-                source: resolved.source,
-                href: location.href,
-                postedNotes
-              };
-            }
-            const personalInfo = await getByKey(client, "PERSONAL_INFO");
-            const accountBase = await getByKey(client, "QUERY_ACCOUNT_DATA");
-            const postedNotes = await getByKey(client, "USER_POSTED_NOTES", { tab: 0 });
-            const latestNote = await getByKey(client, "LATEST_NOTE");
-            const noteId = latestNote && latestNote.noteInfo && latestNote.noteInfo.id;
-            const noteDetail = noteId
-              ? await getByKey(client, "NOTE_STATICS_OVERVIEW", { note_id: noteId })
-              : null;
-            return {
-              ok: true,
-              source: resolved.source,
-              href: location.href,
-              personalInfo,
-              accountBase,
-              postedNotes,
-              latestNote,
-              noteDetail
-            };
-          } catch (error) {
-            return {
-              ok: false,
-              source: "page-client",
-              href: location.href,
-              error: errorText(error)
-            };
-          }
-        })()
-    "#
-    .replace("__KIND__", &kind_json)
-    .replace("__PAGE_KEY__", &page_key_json))
-}
-
 fn managed_browser_eval_json(session: &ManagedBrowserAuthSession, expression: &str) -> Result<Value, String> {
     let websocket_url = page_websocket_url(session.remote_debugging_port, &session.login_url)?;
     let mut client = DevtoolsClient::connect(&websocket_url)?;
@@ -983,7 +773,49 @@ fn managed_browser_auth_profile_dir(
         .join(profile_id))
 }
 
-fn managed_browser_runtime_dir(
+pub(crate) fn delete_managed_browser_account_data(
+    app: &AppHandle,
+    account: &ChannelAccount,
+    profile_ids: &[String],
+) -> Result<(), String> {
+    let platform_id = normalize_platform_id(&account.platform_id);
+    let Some(platform) = platforms::platform(&platform_id) else {
+        return Ok(());
+    };
+
+    let mut paths = Vec::new();
+    for profile_id in profile_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        push_unique_path(
+            &mut paths,
+            managed_browser_auth_profile_dir(app, platform, profile_id)?,
+        );
+    }
+    push_unique_path(
+        &mut paths,
+        managed_browser_runtime_account_dir(app, platform, account)?,
+    );
+
+    for path in paths {
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|error| {
+                format!("清理{}浏览器本地数据失败: {error}", platform.name)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|item| item == &path) {
+        paths.push(path);
+    }
+}
+
+fn managed_browser_runtime_account_dir(
     app: &AppHandle,
     platform: &platforms::ChannelPlatform,
     account: &ChannelAccount,
@@ -995,7 +827,15 @@ fn managed_browser_runtime_dir(
     Ok(app_data_dir
         .join("playwright-browser-runtime")
         .join(platform.id)
-        .join(stable_label_fragment(&account.id))
+        .join(stable_label_fragment(&account.id)))
+}
+
+fn managed_browser_runtime_dir(
+    app: &AppHandle,
+    platform: &platforms::ChannelPlatform,
+    account: &ChannelAccount,
+) -> Result<PathBuf, String> {
+    Ok(managed_browser_runtime_account_dir(app, platform, account)?
         .join(Uuid::new_v4().to_string()))
 }
 

@@ -11,5 +11,5 @@ the copied signer source.
 
 Local changes:
 - Removed the standalone test invocation that logs `window.mnsv2(...)`.
-- Runtime `crypto-js` is provided by a small Node.js shim that maps MD5 to the
-  built-in `crypto` module.
+- Runtime `crypto-js` is provided by the embedded QuickJS shim in
+  `xiaohongshu.rs`, with MD5 and trace generation delegated to Rust.

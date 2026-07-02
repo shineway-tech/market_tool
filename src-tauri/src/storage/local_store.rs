@@ -421,24 +421,38 @@ pub(crate) fn write_channel_works_page_cache(
     Ok(())
 }
 
-pub(crate) fn delete_channel_account_content_cache(
+pub(crate) fn delete_channel_account_local_data(
     app: &AppHandle,
     account_id: &str,
+    account_keys: &[String],
 ) -> Result<(), String> {
     let mut conn = open_content_db(app)?;
     let tx = conn.transaction().map_err(|error| error.to_string())?;
-    for table in [
-        "account_profile_snapshots",
-        "account_overviews",
-        "account_latest_works",
-        "account_latest_work_periods",
-        "account_work_pages",
-    ] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE account_id = ?1"),
-            params![account_id],
-        )
-        .map_err(|error| error.to_string())?;
+
+    let mut keys = Vec::new();
+    push_unique(&mut keys, account_id.to_string());
+    for key in account_keys {
+        push_unique(&mut keys, key.clone());
+    }
+
+    for key in keys {
+        tx.execute("DELETE FROM platform_sessions WHERE account_id = ?1", params![&key])
+            .map_err(|error| error.to_string())?;
+        tx.execute("DELETE FROM account_sync_logs WHERE account_id = ?1", params![&key])
+            .map_err(|error| error.to_string())?;
+        for table in [
+            "account_profile_snapshots",
+            "account_overviews",
+            "account_latest_works",
+            "account_latest_work_periods",
+            "account_work_pages",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE account_id = ?1"),
+                params![&key],
+            )
+            .map_err(|error| error.to_string())?;
+        }
     }
     tx.commit().map_err(|error| error.to_string())
 }

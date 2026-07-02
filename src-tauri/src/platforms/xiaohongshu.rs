@@ -1,7 +1,8 @@
 use super::*;
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
-use serde::{Deserialize, Serialize};
-use std::{io::Write, path::PathBuf, process::Stdio, sync::OnceLock};
+use rquickjs::{context::EvalOptions, function::Func, CatchResultExt, Context, Runtime};
+use serde::Deserialize;
+use uuid::Uuid;
 
 const COOKIE_DOMAINS: &[DomainRule] = &[DomainRule {
     host: "xiaohongshu.com",
@@ -415,14 +416,6 @@ fn xhs_response_payload(value: &Value) -> Option<&Value> {
         .or(Some(value))
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct XhsCreatorSignatureInput<'a> {
-    api: &'a str,
-    data: &'a str,
-    a1: &'a str,
-}
-
 #[derive(Debug, Deserialize)]
 struct XhsCreatorSignature {
     #[serde(rename = "x-s")]
@@ -540,66 +533,79 @@ fn xhs_creator_signature_api(url: &str) -> Result<String, String> {
 }
 
 fn generate_xhs_creator_signature(api: &str, data: &str, a1: &str) -> Result<XhsCreatorSignature, String> {
-    let signer_path = xhs_creator_signer_path()?;
-    let input = XhsCreatorSignatureInput { api, data, a1 };
-    let mut child = Command::new("node")
-        .arg("-e")
-        .arg(XHS_CREATOR_SIGNER_RUNNER)
-        .arg(&signer_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动小红书签名运行时失败，请确认已安装 Node.js: {error}"))?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "小红书签名运行时输入不可用".to_string())?;
-        let payload = serde_json::to_vec(&input).map_err(|error| format!("小红书签名参数序列化失败: {error}"))?;
-        stdin
-            .write_all(&payload)
-            .map_err(|error| format!("写入小红书签名参数失败: {error}"))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("读取小红书签名结果失败: {error}"))?;
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if message.is_empty() {
-            "小红书签名运行时执行失败".to_string()
-        } else {
-            format!("小红书签名运行时执行失败: {message}")
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let signature_json = stdout
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| line.starts_with('{') && line.ends_with('}'))
-        .unwrap_or_else(|| stdout.trim());
-    serde_json::from_str::<XhsCreatorSignature>(signature_json)
+    let input_json = serde_json::to_string(&serde_json::json!({
+        "api": api,
+        "data": data,
+        "a1": a1,
+    }))
+    .map_err(|error| format!("小红书签名参数序列化失败: {error}"))?;
+    let signature_json = run_xhs_creator_signer(&input_json)
+        .map_err(|error| format!("小红书签名执行失败，请稍后重试或更新客户端: {error}"))?;
+    serde_json::from_str::<XhsCreatorSignature>(&signature_json)
         .map_err(|error| format!("解析小红书签名结果失败: {error}"))
 }
 
-fn xhs_creator_signer_path() -> Result<PathBuf, String> {
-    static SIGNER_PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    SIGNER_PATH
-        .get_or_init(|| {
-            let dir = std::env::temp_dir().join("channel-nest-xhs-signer");
-            fs::create_dir_all(&dir).map_err(|error| format!("创建小红书签名目录失败: {error}"))?;
-            let path = dir.join("xhs_creator_260411.js");
-            let should_write = fs::metadata(&path)
-                .map(|metadata| metadata.len() != XHS_CREATOR_SIGNER_JS.len() as u64)
-                .unwrap_or(true);
-            if should_write {
-                fs::write(&path, XHS_CREATOR_SIGNER_JS)
-                    .map_err(|error| format!("写入小红书签名资源失败: {error}"))?;
-            }
-            Ok(path)
-        })
-        .clone()
+fn run_xhs_creator_signer(input_json: &str) -> Result<String, String> {
+    let runtime = Runtime::new().map_err(|error| format!("创建内置签名运行时失败: {error}"))?;
+    let context = Context::full(&runtime).map_err(|error| format!("初始化内置签名运行时失败: {error}"))?;
+    context.with(|ctx| {
+        let globals = ctx.globals();
+        globals
+            .set("__xhsMd5", Func::from(|value: String| xhs_md5_hex(&value)))
+            .map_err(|error| format!("注入 MD5 函数失败: {error}"))?;
+        globals
+            .set(
+                "__xhsTraceHexRust",
+                Func::from(|length: i32| xhs_trace_hex(length.max(0) as usize)),
+            )
+            .map_err(|error| format!("注入 trace 函数失败: {error}"))?;
+
+        let mut script = String::new();
+        script.push_str(XHS_CREATOR_SIGNER_SHIM);
+        script.push_str(XHS_CREATOR_SIGNER_JS);
+        script.push_str("\nconst __xhsInput = ");
+        script.push_str(input_json);
+        script.push_str(
+            r#";
+if (typeof window.mnsv2 !== "function" && typeof mnsv2 === "function") {
+  window.mnsv2 = mnsv2;
+}
+if (typeof window.mnsv2 !== "function") {
+  throw new Error("mnsv2 unavailable");
+}
+const __xhsResult = module.exports.get_request_headers_params(
+  __xhsInput.api,
+  __xhsInput.data || "",
+  __xhsInput.a1
+);
+JSON.stringify({
+  "x-s": __xhsResult.xs,
+  "x-t": String(__xhsResult.xt),
+  "x-s-common": __xhsResult.xs_common,
+  "x-b3-traceid": __xhsTraceHex(16),
+  "x-xray-traceid": __xhsTraceHex(32)
+});
+"#,
+        );
+        let mut eval_options = EvalOptions::default();
+        eval_options.strict = false;
+        ctx.eval_with_options::<String, _>(script, eval_options)
+            .catch(&ctx)
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn xhs_md5_hex(value: &str) -> String {
+    format!("{:x}", md5::compute(value.as_bytes()))
+}
+
+fn xhs_trace_hex(length: usize) -> String {
+    let mut output = String::new();
+    while output.len() < length {
+        output.push_str(&Uuid::new_v4().simple().to_string());
+    }
+    output.truncate(length);
+    output
 }
 
 fn xhs_cookie_value(login_cookie: &str, cookie_header: &str, name: &str) -> Option<String> {
@@ -628,69 +634,125 @@ fn xhs_cookie_value(login_cookie: &str, cookie_header: &str, name: &str) -> Opti
     })
 }
 
-const XHS_CREATOR_SIGNER_RUNNER: &str = r#"
-const fs = require("fs");
-const crypto = require("crypto");
-const Module = require("module");
+const XHS_CREATOR_SIGNER_SHIM: &str = r#"
+var __xhsHostGlobal = globalThis;
+var global = __xhsHostGlobal;
+var window = global;
+var self = global;
+var Navigator, navigator, Location, location, Storage, localStorage;
+var Screen, screen, HTMLHtmlElement, html, HTMLBodyElement, body, HTMLDocument, document;
+var mnsv2;
+var process = { env: {}, browser: false, version: "", versions: {} };
+var module = { exports: {} };
+var exports = module.exports;
+var console = {
+  log: function() {},
+  info: function() {},
+  warn: function() {},
+  error: function() {}
+};
+global.console = console;
+global.process = process;
+__xhsHostGlobal.console = console;
+__xhsHostGlobal.process = process;
 
-const signerPath = process.argv[1];
-const input = JSON.parse(fs.readFileSync(0, "utf8"));
-
-const originalLoad = Module._load;
-Module._load = function(request, parent, isMain) {
-  if (request === "crypto-js") {
+function require(name) {
+  if (name === "crypto-js") {
     return {
-      MD5(value) {
+      MD5: function(value) {
         return {
-          toString() {
-            return crypto.createHash("md5").update(String(value)).digest("hex");
+          toString: function() {
+            return __xhsHostGlobal.__xhsMd5(String(value));
           }
         };
       }
     };
   }
-  return originalLoad.apply(this, arguments);
-};
-
-function traceHex(length) {
-  return crypto.randomBytes(Math.ceil(length / 2)).toString("hex").slice(0, length);
+  throw new Error("Unsupported module: " + name);
 }
 
-const originalConsole = {
-  log: console.log,
-  info: console.info,
-  warn: console.warn,
-  error: console.error
-};
-
-function muteConsole() {
-  console.log = console.info = console.warn = console.error = function() {};
+function __xhsTraceHex(length) {
+  return __xhsHostGlobal.__xhsTraceHexRust(Number(length) || 0);
 }
 
-function restoreConsole() {
-  console.log = originalConsole.log;
-  console.info = originalConsole.info;
-  console.warn = originalConsole.warn;
-  console.error = originalConsole.error;
+if (typeof btoa === "undefined") {
+  var __xhsBase64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+  function btoa(input) {
+    var str = String(input);
+    var output = "";
+    for (var block = 0, charCode, index = 0, map = __xhsBase64Chars; str.charAt(index | 0) || (map = "=", index % 1); output += map.charAt(63 & block >> 8 - index % 1 * 8)) {
+      charCode = str.charCodeAt(index += 3 / 4);
+      if (charCode > 0xff) {
+        throw new Error("btoa failed");
+      }
+      block = block << 8 | charCode;
+    }
+    return output;
+  }
+  global.btoa = btoa;
 }
 
-let signature;
-muteConsole();
-try {
-  const signer = require(signerPath);
-  const result = signer.get_request_headers_params(input.api, input.data || "", input.a1);
-  signature = {
-    "x-s": result.xs,
-    "x-t": String(result.xt),
-    "x-s-common": result.xs_common,
-    "x-b3-traceid": traceHex(16),
-    "x-xray-traceid": traceHex(32)
+if (typeof atob === "undefined") {
+  function atob(input) {
+    var str = String(input).replace(/=+$/, "");
+    var output = "";
+    if (str.length % 4 === 1) {
+      throw new Error("atob failed");
+    }
+    for (var bc = 0, bs = 0, buffer, index = 0; buffer = str.charAt(index++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
+      buffer = __xhsBase64Chars.indexOf(buffer);
+    }
+    return output;
+  }
+  global.atob = atob;
+}
+
+if (typeof performance === "undefined") {
+  var performance = { now: function() { return Date.now(); } };
+  global.performance = performance;
+}
+
+if (typeof Event === "undefined") {
+  function Event(type) {
+    this.type = type || "";
+  }
+  global.Event = Event;
+}
+
+if (typeof TextEncoder === "undefined") {
+  function __xhsUtf8Bytes(input) {
+    var text = String(input);
+    var bytes = [];
+    for (var index = 0; index < text.length; index += 1) {
+      var codePoint = text.codePointAt(index);
+      if (codePoint > 0xffff) {
+        index += 1;
+      }
+      if (codePoint <= 0x7f) {
+        bytes.push(codePoint);
+      } else if (codePoint <= 0x7ff) {
+        bytes.push(0xc0 | (codePoint >> 6));
+        bytes.push(0x80 | (codePoint & 0x3f));
+      } else if (codePoint <= 0xffff) {
+        bytes.push(0xe0 | (codePoint >> 12));
+        bytes.push(0x80 | ((codePoint >> 6) & 0x3f));
+        bytes.push(0x80 | (codePoint & 0x3f));
+      } else {
+        bytes.push(0xf0 | (codePoint >> 18));
+        bytes.push(0x80 | ((codePoint >> 12) & 0x3f));
+        bytes.push(0x80 | ((codePoint >> 6) & 0x3f));
+        bytes.push(0x80 | (codePoint & 0x3f));
+      }
+    }
+    return new Uint8Array(bytes);
+  }
+
+  var TextEncoder = function TextEncoder() {};
+  TextEncoder.prototype.encode = function(input) {
+    return __xhsUtf8Bytes(input);
   };
-} finally {
-  restoreConsole();
+  global.TextEncoder = TextEncoder;
 }
-
-process.stdout.write(JSON.stringify(signature));
 "#;
 
 pub(super) async fn fetch_xhs_account_content(
@@ -1793,4 +1855,25 @@ fn strip_html(value: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xhs_creator_signature_runs_in_embedded_js_runtime() {
+        let signature = generate_xhs_creator_signature(
+            "/api/galaxy/creator/home/latest_note_data",
+            "",
+            "1908d1a0b6eb13b5egsm8ggm97q17yfuv92n4l0g850000266761",
+        )
+        .expect("embedded xhs signer should generate headers");
+
+        assert!(!signature.x_s.trim().is_empty());
+        assert!(!signature.x_s_common.trim().is_empty());
+        assert!(signature.x_t.parse::<i64>().is_ok());
+        assert_eq!(signature.x_b3_traceid.len(), 16);
+        assert_eq!(signature.x_xray_traceid.len(), 32);
+    }
 }

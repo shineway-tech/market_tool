@@ -1174,14 +1174,30 @@ pub(crate) async fn delete_channel_account(
     user_id: String,
 ) -> Result<(), String> {
     let user_id = normalize_user_id(&user_id)?;
-    let account = {
+    let (account, secret_keys, browser_profile_ids) = {
         let store = state.store.lock().map_err(lock_error)?;
-        store
+        let account = store
             .accounts
             .iter()
             .find(|item| item.id == account_id && account_belongs_to_user(item, &user_id))
             .cloned()
+            .ok_or_else(|| "账号不存在".to_string())?;
+        let secret_keys = account_secret_candidates(&account);
+        let mut browser_profile_ids = Vec::new();
+        for secret_key in &secret_keys {
+            if let Some(profile_id) = store
+                .account_secrets
+                .get(secret_key)
+                .and_then(|secret| secret.webview_session_id.as_deref())
+            {
+                push_unique(&mut browser_profile_ids, profile_id.to_string());
+            }
+        }
+        (account, secret_keys, browser_profile_ids)
     };
+
+    delete_channel_account_local_data(&app, &account.id, &secret_keys)?;
+
     let mut store = state.store.lock().map_err(lock_error)?;
     let original_len = store.accounts.len();
     store
@@ -1190,14 +1206,13 @@ pub(crate) async fn delete_channel_account(
     if store.accounts.len() == original_len {
         return Err("账号不存在".to_string());
     }
-    for secret_key in account
-        .as_ref()
-        .map(account_secret_candidates)
-        .unwrap_or_default()
-    {
-        store.account_secrets.remove(&secret_key);
+    for secret_key in &secret_keys {
+        store.account_secrets.remove(secret_key);
     }
     persist_store(&app, &store)?;
-    let _ = delete_channel_account_content_cache(&app, &account_id);
+    drop(store);
+    if let Err(error) = delete_managed_browser_account_data(&app, &account, &browser_profile_ids) {
+        eprintln!("[channel-account] failed to clean browser data for {}: {error}", account.id);
+    }
     Ok(())
 }

@@ -993,12 +993,14 @@ async function checkAuthOnce(verbose = true) {
     });
     if (result.status === "success") {
       stopAuthPolling();
+      let accountIdToSync: string | null = null;
       accounts = await invokeCommand<ChannelAccount[]>("list_channel_accounts", {
         userId: requireCurrentUserId(),
       });
       if (result.account?.id) {
         selectedAccountId = result.account.id;
         activeContentTab = "overview";
+        accountIdToSync = result.account.id;
       }
       syncChannelSelection({ expandSelected: true });
       activeAuthTask = null;
@@ -1006,6 +1008,9 @@ async function checkAuthOnce(verbose = true) {
       activeMenuId = "channels";
       showToast(copy[language].authDone);
       render();
+      if (accountIdToSync) {
+        void syncAccountContent(accountIdToSync, { force: true });
+      }
     } else if (result.status === "failed") {
       stopAuthPolling();
       activeAuthTask = null;

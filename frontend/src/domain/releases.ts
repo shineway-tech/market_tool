@@ -50,8 +50,8 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
           },
           {
             icon: "layers",
-            title: "Channel Management",
-            items: ["Xiaohongshu, WeChat Channels, Douyin, Bilibili, and Kuaishou", "Multiple accounts per platform", "Avatar, nickname, followers, and status display"],
+            title: "Platform Accounts",
+            items: ["Xiaohongshu, WeChat Channels, Douyin, Bilibili, and Kuaishou sign-in", "Multiple accounts per platform", "Avatar, nickname, followers, and status display"],
           },
           {
             icon: "refresh",
@@ -120,13 +120,13 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
         },
         {
           icon: "layers",
-          title: "渠道管理",
-          items: ["小红书、视频号、抖音、哔哩哔哩、快手授权", "同一平台支持多个账号", "展示头像、昵称、粉丝数和状态"],
+          title: "平台账号",
+          items: ["小红书、视频号、抖音、哔哩哔哩、快手账号登录", "同一平台支持多个账号", "展示头像、昵称、粉丝数和状态"],
         },
         {
           icon: "refresh",
           title: "账号操作",
-          items: ["刷新账号数据", "删除已授权账号", "打开对应平台创作者主页"],
+          items: ["刷新账号数据", "删除已登录账号", "打开对应平台创作者主页"],
         },
         {
           icon: "settings",
