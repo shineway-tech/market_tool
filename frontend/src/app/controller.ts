@@ -14,6 +14,14 @@ import type {
   StartLoginResponse,
   ThemeMode,
 } from "../domain/types";
+import {
+  type ChannelAccountContent,
+  mockCommentsForAccounts,
+  mockWorksForAccounts,
+  type ChannelWorksPage,
+  type ChannelWork,
+  type ContentTab,
+} from "../domain/channel-content";
 import { fallbackPlatforms } from "../domain/platforms";
 import { isQrAuth } from "../domain/auth-task";
 import { releaseHistoryForLanguage } from "../domain/releases";
@@ -28,17 +36,13 @@ import {
   reportNamedFieldError,
 } from "../utils/forms";
 import {
-  accountCountLabel as formatAccountCountLabel,
   formatFollowersTotal as formatAccountFollowersTotal,
   initials as accountInitials,
 } from "../utils/format";
 import {
-  accountFollowersText,
-  accountSyncText,
-  renderAccountItem,
+  renderAccountNavItem,
   renderAuthDialog,
-  renderEmptyAccounts,
-  renderPlatformItem,
+  renderPlatformTreeItem,
 } from "../ui/channel-components";
 import { renderAccountDropdown } from "../ui/user-menu";
 import { renderAuthPage } from "../pages/auth";
@@ -58,6 +62,14 @@ import { invokeCommand } from "../services/tauri-commands";
 let platforms: PlatformInfo[] = fallbackPlatforms;
 let accounts: ChannelAccount[] = [];
 let selectedPlatformId = "xiaohongshu";
+let selectedAccountId: string | null = null;
+let expandedPlatformIds = new Set<string>();
+let activeContentTab: ContentTab = "overview";
+type ChannelWorkType = "video" | "article";
+type OverviewPeriod = 1 | 7 | 30 | 90 | 36500 | 65535;
+const BILIBILI_TOTAL_PERIOD: OverviewPeriod = 65535;
+let channelSearchQuery = "";
+let channelSearchComposing = false;
 let activeMenuId: MenuId = "channels";
 let userMenuOpen = false;
 let activeAuthTask: StartLoginResponse | null = null;
@@ -67,6 +79,12 @@ let authPollTimer: number | undefined;
 let refreshingAccountIds = new Set<string>();
 let refreshingPlatformIds = new Set<string>();
 let openingHomepageIds = new Set<string>();
+let syncingContentIds = new Set<string>();
+let loadingWorksPageIds = new Set<string>();
+let accountContentCache = new Map<string, ChannelAccountContent>();
+let accountWorksPages = new Map<string, ChannelWorksPage[]>();
+let overviewPeriodByAccount = new Map<string, OverviewPeriod>();
+let workTypeByAccount = new Map<string, ChannelWorkType>();
 let language: LanguageMode = readStoredMode("channel-nest-language", "zh", ["zh", "en"]);
 let theme: ThemeMode = readStoredMode("channel-nest-theme", "dark", ["dark", "light"]);
 let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || "";
@@ -152,8 +170,10 @@ async function loadClientData() {
     });
     platforms = bootstrap.platforms;
     accounts = bootstrap.accounts;
+    syncChannelSelection({ preferFirstWithAccounts: true, expandSelected: true });
   } catch (error) {
     console.warn("Using browser fallback because Tauri is not available", error);
+    syncChannelSelection({ preferFirstWithAccounts: true, expandSelected: true });
   }
 }
 
@@ -185,6 +205,8 @@ async function applyAccountUpdate(
   }
 
   accounts = upsertAccount(accounts, updated, currentUser?.id);
+  expandedPlatformIds.add(updated.platformId);
+  syncChannelSelection();
 
   if (options.rerender) {
     render();
@@ -211,6 +233,21 @@ function render() {
 
   bindEvents();
   updates.scheduleAutoCheck();
+}
+
+function renderPreservingWorkspaceScroll() {
+  const scrollTop = document.querySelector<HTMLElement>(".workspace-body")?.scrollTop;
+  render();
+  if (typeof scrollTop !== "number") return;
+
+  const restore = () => {
+    const workspaceBody = document.querySelector<HTMLElement>(".workspace-body");
+    if (workspaceBody) {
+      workspaceBody.scrollTop = scrollTop;
+    }
+  };
+  restore();
+  window.requestAnimationFrame(restore);
 }
 
 function authPage() {
@@ -244,24 +281,48 @@ function renderMainContent() {
 }
 
 function channelPage() {
+  syncChannelSelection();
   const selectedPlatform = getSelectedPlatform();
+  const selectedAccount = getSelectedAccount();
+  const selectedWorkType = selectedAccount ? selectedAccountWorkType(selectedAccount.id) : "video";
   const selectedAccounts = accounts.filter((item) => item.platformId === selectedPlatform.id);
-  const connectedCount = accounts.length;
-  const activeAccountCount = selectedAccounts.filter((item) => item.status === "active").length;
+  const visiblePlatforms = visibleChannelPlatforms();
+  const allWorks = worksForCurrentSelection(selectedAccount, selectedPlatform.id);
+  const allComments = mockCommentsForAccounts(accounts);
+  const works = allWorks.filter((item) =>
+    selectedAccount ? item.accountId === selectedAccount.id : item.platformId === selectedPlatform.id,
+  );
+  const comments = allComments.filter((item) =>
+    selectedAccount ? item.accountId === selectedAccount.id : item.platformId === selectedPlatform.id,
+  );
   const platformRefreshing = refreshingPlatformIds.has(selectedPlatform.id);
+  const selectedAccountContent = selectedAccount ? accountContentCache.get(selectedAccount.id) || null : null;
+  const selectedWorksPages = selectedAccount ? accountWorksPages.get(worksStateKey(selectedAccount.id, selectedWorkType)) || [] : [];
+  const overviewPeriod = selectedAccount ? selectedAccountOverviewPeriod(selectedAccount) : 7;
 
   return renderChannelsPage({
     text: copy[language],
+    language,
     selectedPlatform,
+    selectedAccount,
     selectedAccounts,
-    connectedCount,
-    activeAccountCount,
     platformRefreshing,
-    platforms,
-    platformItem,
-    accountItem,
-    emptyAccounts,
-    formatFollowersTotal: (items) => formatAccountFollowersTotal(items, language, copy[language]),
+    selectedAccountRefreshing: selectedAccount ? refreshingAccountIds.has(selectedAccount.id) : false,
+    selectedAccountOpeningHomepage: selectedAccount ? openingHomepageIds.has(selectedAccount.id) : false,
+    selectedAccountContent,
+    selectedAccountContentLoading: selectedAccount ? syncingContentIds.has(selectedAccount.id) : false,
+    selectedWorksPages,
+    selectedWorksLoading: selectedAccount ? isWorksLoading(selectedAccount.id) : false,
+    selectedWorkType,
+    overviewPeriod,
+    activeTab: activeContentTab,
+    works,
+    comments,
+    platforms: visiblePlatforms,
+    searchQuery: channelSearchQuery,
+    hasSearchResults: visiblePlatforms.length > 0,
+    platformTree,
+    formatFollowersTotal: (items) => formatAccountFollowersTotal(items, language),
   });
 }
 
@@ -343,12 +404,73 @@ function bindEvents() {
   });
 
   document.querySelectorAll<HTMLElement>("[data-platform]").forEach((item) => {
-    item.addEventListener("click", () => {
+    item.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("[data-toggle-platform]")) return;
       const nextPlatformId = item.dataset.platform || selectedPlatformId;
       selectedPlatformId = nextPlatformId;
+      selectedAccountId = null;
+      if (!normalizedChannelSearch()) {
+        togglePlatformExpanded(nextPlatformId);
+      }
       activeMenuId = "channels";
       userMenuOpen = false;
       render();
+    });
+  });
+
+  const channelSearch = document.querySelector<HTMLInputElement>("[data-channel-search]");
+  channelSearch?.addEventListener("compositionstart", () => {
+    channelSearchComposing = true;
+  });
+  channelSearch?.addEventListener("compositionend", (event) => {
+    if (!(event.currentTarget instanceof HTMLInputElement)) return;
+    channelSearchComposing = false;
+    updateChannelSearch(event.currentTarget.value);
+  });
+  channelSearch?.addEventListener("input", (event) => {
+    if (!(event.currentTarget instanceof HTMLInputElement) || channelSearchComposing) return;
+    updateChannelSearch(event.currentTarget.value);
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-toggle-platform]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const platformId = item.dataset.togglePlatform;
+      if (!platformId) return;
+      togglePlatformExpanded(platformId);
+      activeMenuId = "channels";
+      userMenuOpen = false;
+      render();
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-account]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const accountId = item.dataset.account;
+      const account = accounts.find((candidate) => candidate.id === accountId);
+      if (!account) return;
+      selectedAccountId = account.id;
+      selectedPlatformId = account.platformId;
+      expandedPlatformIds.add(account.platformId);
+      activeContentTab = "overview";
+      activeMenuId = "channels";
+      userMenuOpen = false;
+      void syncAccountContent(account.id);
+      render();
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-channel-tab]").forEach((item) => {
+    item.addEventListener("click", () => {
+      const nextTab = item.dataset.channelTab;
+      if (!isContentTab(nextTab)) return;
+      activeContentTab = nextTab;
+      activeMenuId = "channels";
+      userMenuOpen = false;
+      render();
+      if (nextTab === "works") {
+        void loadWorksPageForSelectedAccount({ force: !selectedAccountHasWorksPage() });
+      }
     });
   });
 
@@ -363,6 +485,25 @@ function bindEvents() {
       if (action === "refresh-platform") {
         userMenuOpen = false;
         void refreshPlatform(selectedPlatformId);
+      }
+      if (action === "overview-period") {
+        const account = getSelectedAccount();
+        if (!account) return;
+        overviewPeriodByAccount.set(account.id, readOverviewPeriod(element.dataset.period));
+        render();
+      }
+      if (action === "work-type") {
+        const account = getSelectedAccount();
+        const workType = element.dataset.workType === "article" ? "article" : "video";
+        if (!account || !["wechat-channels", "bilibili"].includes(account.platformId)) return;
+        workTypeByAccount.set(account.id, workType);
+        render();
+        if (activeContentTab === "works") {
+          void loadWorksPageForSelectedAccount({ force: !selectedAccountHasWorksPage() });
+        }
+      }
+      if (action === "load-more-works") {
+        void loadWorksPageForSelectedAccount({ next: true });
       }
       if (action === "close-auth") {
         stopAuthPolling();
@@ -415,6 +556,14 @@ function bindEvents() {
   document.querySelectorAll<HTMLElement>("[data-open-homepage]").forEach((element) => {
     element.addEventListener("click", () => {
       void openHomepage(element.dataset.openHomepage || "");
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-copy-account]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const value = element.dataset.copyAccount || "";
+      void copyAccountValue(value);
     });
   });
 
@@ -786,6 +935,8 @@ function logout() {
     confirmPassword: "",
   };
   activeAuthTask = null;
+  selectedAccountId = null;
+  activeContentTab = "overview";
   accounts = [];
   localStorage.removeItem(AUTH_TOKEN_KEY);
   render();
@@ -795,6 +946,8 @@ function logout() {
 async function startLogin(platformId: string, loginTarget?: LoginTarget) {
   try {
     selectedPlatformId = platformId;
+    selectedAccountId = null;
+    expandedPlatformIds.add(platformId);
     const request = loginTarget
       ? { userId: requireCurrentUserId(), platformId, loginTarget }
       : { userId: requireCurrentUserId(), platformId };
@@ -843,6 +996,11 @@ async function checkAuthOnce(verbose = true) {
       accounts = await invokeCommand<ChannelAccount[]>("list_channel_accounts", {
         userId: requireCurrentUserId(),
       });
+      if (result.account?.id) {
+        selectedAccountId = result.account.id;
+        activeContentTab = "overview";
+      }
+      syncChannelSelection({ expandSelected: true });
       activeAuthTask = null;
       activeAuthMessage = "";
       activeMenuId = "channels";
@@ -916,6 +1074,7 @@ async function refreshAccount(accountId: string) {
       userId: requireCurrentUserId(),
     });
     await applyAccountUpdate(updated);
+    await syncAccountContent(accountId, { force: true, silent: true });
     toastMessage = copy[language].accountRefreshed;
   } catch (error) {
     const expired = await markAccountUnavailable(accountId);
@@ -928,6 +1087,101 @@ async function refreshAccount(accountId: string) {
     render();
     if (toastMessage) showToast(toastMessage);
   }
+}
+
+async function syncAccountContent(
+  accountId: string,
+  options: { force?: boolean; silent?: boolean } = {},
+) {
+  const account = accounts.find((item) => item.id === accountId);
+  if (!account || !supportsAccountContent(account.platformId) || syncingContentIds.has(accountId)) return;
+  syncingContentIds.add(accountId);
+  render();
+  try {
+    const content = await invokeCommand<ChannelAccountContent>("sync_channel_account_content", {
+      request: {
+        accountId,
+        userId: requireCurrentUserId(),
+        force: Boolean(options.force),
+      },
+    });
+    accountContentCache.set(accountId, content);
+    applyContentProfileToAccount(content);
+    if (content.error && !options.silent) {
+      showToast(content.error);
+    }
+  } catch (error) {
+    if (!options.silent) showToast(normalizeError(error));
+  } finally {
+    syncingContentIds.delete(accountId);
+    render();
+  }
+}
+
+async function loadWorksPageForSelectedAccount(options: { next?: boolean; force?: boolean } = {}) {
+  const account = getSelectedAccount();
+  if (!account || !supportsWorksPages(account.platformId)) return;
+  const workType = selectedAccountWorkType(account.id);
+  const pagesKey = worksStateKey(account.id, workType);
+  const pages = accountWorksPages.get(pagesKey) || [];
+  const pageKey = options.next ? pages[pages.length - 1]?.nextPageKey || "" : "";
+  if (options.next && !pageKey) return;
+  const loadingKey = `${pagesKey}:${pageKey}`;
+  if (loadingWorksPageIds.has(loadingKey)) return;
+  loadingWorksPageIds.add(loadingKey);
+  if (options.next) {
+    renderPreservingWorkspaceScroll();
+  } else {
+    render();
+  }
+  try {
+    const page = await invokeCommand<ChannelWorksPage>("load_channel_account_works_page", {
+      request: {
+        accountId: account.id,
+        userId: requireCurrentUserId(),
+        pageKey,
+        workType: ["wechat-channels", "bilibili"].includes(account.platformId) ? workType : undefined,
+        force: Boolean(options.force),
+      },
+    });
+    const existingPages = options.next ? pages : [];
+    const nextPages = [...existingPages.filter((item) => item.pageKey !== page.pageKey), page]
+      .sort((a, b) => pageSortValue(a.pageKey) - pageSortValue(b.pageKey));
+    accountWorksPages.set(pagesKey, nextPages);
+    if (page.error && options.next) {
+      showToast(page.error);
+    }
+  } catch (error) {
+    if (options.next) showToast(normalizeError(error));
+  } finally {
+    loadingWorksPageIds.delete(loadingKey);
+    if (options.next) {
+      renderPreservingWorkspaceScroll();
+    } else {
+      render();
+    }
+  }
+}
+
+function applyContentProfileToAccount(content: ChannelAccountContent) {
+  if (!content.profile) return;
+  accounts = accounts.map((account) => {
+    if (account.id !== content.accountId) return account;
+    return {
+      ...account,
+      followers: content.profile?.followers ?? account.followers,
+      following: content.profile?.following ?? account.following,
+      likes: content.profile?.likes ?? account.likes,
+      lastSyncAt: content.profile?.lastSyncAt || account.lastSyncAt,
+    };
+  });
+}
+
+function pageSortValue(pageKey: string) {
+  const normalized = pageKey.includes(":") ? pageKey.split(":").pop() || "" : pageKey;
+  if (!normalized) return 0;
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
 async function refreshPlatform(platformId: string) {
@@ -984,6 +1238,40 @@ async function openHomepage(accountId: string) {
   }
 }
 
+async function copyAccountValue(value: string) {
+  const account = value.trim();
+  if (!account) return;
+  try {
+    await writeClipboardText(account);
+    showToast(copy[language].accountCopied);
+  } catch (error) {
+    showToast(normalizeError(error));
+  }
+}
+
+async function writeClipboardText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall back to the legacy command below for embedded WebViews.
+    }
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) {
+    throw new Error(copy[language].accountCopyFailed);
+  }
+}
+
 async function deleteAccount(accountId: string) {
   if (!accountId) return;
   try {
@@ -992,6 +1280,14 @@ async function deleteAccount(accountId: string) {
       userId: requireCurrentUserId(),
     });
     accounts = accounts.filter((item) => item.id !== accountId);
+    accountContentCache.delete(accountId);
+    deleteWorksStateForAccount(accountId);
+    overviewPeriodByAccount.delete(accountId);
+    workTypeByAccount.delete(accountId);
+    if (selectedAccountId === accountId) {
+      selectedAccountId = null;
+    }
+    syncChannelSelection();
     showToast(copy[language].accountDeleted);
     render();
   } catch (error) {
@@ -1000,43 +1296,190 @@ async function deleteAccount(accountId: string) {
 }
 
 function getSelectedPlatform() {
-  return platforms.find((item) => item.id === selectedPlatformId) || platforms[0];
+  return platforms.find((item) => item.id === selectedPlatformId) || platforms[0] || fallbackPlatforms[0];
 }
 
-function platformItem(platform: PlatformInfo) {
-  const count = accounts.filter((item) => item.platformId === platform.id).length;
-  const active = platform.id === selectedPlatformId && activeMenuId === "channels";
+function getSelectedAccount() {
+  return selectedAccountId ? accounts.find((item) => item.id === selectedAccountId) || null : null;
+}
 
-  return renderPlatformItem({
+function worksForCurrentSelection(selectedAccount: ChannelAccount | null, platformId: string): ChannelWork[] {
+  if (selectedAccount && supportsWorksPages(selectedAccount.platformId)) {
+    return worksForAccount(selectedAccount.id, selectedAccountWorkType(selectedAccount.id));
+  }
+  const mockWorks = mockWorksForAccounts(accounts);
+  if (selectedAccount) return mockWorks.filter((item) => item.accountId === selectedAccount.id);
+  return mockWorks.filter((item) => item.platformId === platformId);
+}
+
+function worksForAccount(accountId: string, workType: ChannelWorkType = "video"): ChannelWork[] {
+  const pages = accountWorksPages.get(worksStateKey(accountId, workType)) || [];
+  const works = pages.flatMap((page) => page.works || []);
+  const seen = new Set<string>();
+  return works.filter((work) => {
+    if (seen.has(work.id)) return false;
+    seen.add(work.id);
+    return true;
+  });
+}
+
+function isWorksLoading(accountId: string) {
+  const prefix = `${worksStateKey(accountId, selectedAccountWorkType(accountId))}:`;
+  return Array.from(loadingWorksPageIds).some((key) => key.startsWith(prefix));
+}
+
+function supportsAccountContent(platformId: string) {
+  return platformId === "xiaohongshu" || platformId === "wechat-channels" || platformId === "douyin" || platformId === "bilibili" || platformId === "kuaishou";
+}
+
+function supportsWorksPages(platformId: string) {
+  return platformId === "xiaohongshu" || platformId === "wechat-channels" || platformId === "douyin" || platformId === "bilibili" || platformId === "kuaishou";
+}
+
+function selectedAccountWorkType(accountId: string): ChannelWorkType {
+  return workTypeByAccount.get(accountId) || "video";
+}
+
+function selectedAccountHasWorksPage() {
+  const account = getSelectedAccount();
+  if (!account) return false;
+  const workType = selectedAccountWorkType(account.id);
+  return (accountWorksPages.get(worksStateKey(account.id, workType)) || []).length > 0;
+}
+
+function selectedAccountOverviewPeriod(account: ChannelAccount): OverviewPeriod {
+  return overviewPeriodByAccount.get(account.id) || (account.platformId === "douyin" ? 1 : account.platformId === "bilibili" ? BILIBILI_TOTAL_PERIOD : 7);
+}
+
+function readOverviewPeriod(value: string | undefined): OverviewPeriod {
+  if (value === "1") return 1;
+  if (value === "30") return 30;
+  if (value === "90") return 90;
+  if (value === "36500") return 36500;
+  if (value === "65535") return 65535;
+  return 7;
+}
+
+function worksStateKey(accountId: string, workType: ChannelWorkType) {
+  return `${accountId}:${workType}`;
+}
+
+function deleteWorksStateForAccount(accountId: string) {
+  Array.from(accountWorksPages.keys()).forEach((key) => {
+    if (key === accountId || key.startsWith(`${accountId}:`)) {
+      accountWorksPages.delete(key);
+    }
+  });
+}
+
+function syncChannelSelection(options: { preferFirstWithAccounts?: boolean; expandSelected?: boolean } = {}) {
+  if (!platforms.length) return;
+
+  const selectedAccount = getSelectedAccount();
+  if (selectedAccount) {
+    selectedPlatformId = selectedAccount.platformId;
+    if (options.expandSelected) {
+      expandedPlatformIds.add(selectedAccount.platformId);
+    }
+    return;
+  }
+
+  selectedAccountId = null;
+
+  if (options.preferFirstWithAccounts) {
+    const firstPlatformWithAccounts = platforms.find((platform) =>
+      accounts.some((account) => account.platformId === platform.id),
+    );
+    if (firstPlatformWithAccounts) {
+      selectedPlatformId = firstPlatformWithAccounts.id;
+    }
+  }
+
+  if (!platforms.some((item) => item.id === selectedPlatformId)) {
+    selectedPlatformId = platforms[0].id;
+  }
+
+  if (options.expandSelected) {
+    expandedPlatformIds.add(selectedPlatformId);
+  }
+}
+
+function isContentTab(value: string | undefined): value is ContentTab {
+  return value === "overview" || value === "works" || value === "comments" || value === "data";
+}
+
+function updateChannelSearch(value: string) {
+  channelSearchQuery = value;
+  render();
+  window.requestAnimationFrame(() => {
+    const search = document.querySelector<HTMLInputElement>("[data-channel-search]");
+    if (!search) return;
+    search.focus();
+    search.setSelectionRange(search.value.length, search.value.length);
+  });
+}
+
+function togglePlatformExpanded(platformId: string) {
+  if (!accounts.some((account) => account.platformId === platformId)) return;
+  if (expandedPlatformIds.has(platformId)) {
+    expandedPlatformIds.delete(platformId);
+  } else {
+    expandedPlatformIds.add(platformId);
+  }
+}
+
+function visibleChannelPlatforms() {
+  const query = normalizedChannelSearch();
+  if (!query) return platforms;
+
+  return platforms.filter((platform) => {
+    if (matchesPlatformSearch(platform, query)) return true;
+    return accounts.some((account) => account.platformId === platform.id && matchesAccountSearch(account, query));
+  });
+}
+
+function platformTree(platform: PlatformInfo) {
+  const query = normalizedChannelSearch();
+  const platformMatches = query ? matchesPlatformSearch(platform, query) : false;
+  const allPlatformAccounts = accounts.filter((item) => item.platformId === platform.id);
+  const platformAccounts = query && !platformMatches
+    ? allPlatformAccounts.filter((account) => matchesAccountSearch(account, query))
+    : allPlatformAccounts;
+  const count = allPlatformAccounts.length;
+  const active = !selectedAccountId && platform.id === selectedPlatformId && activeMenuId === "channels";
+
+  return renderPlatformTreeItem({
     platform,
-    text: copy[language],
     count,
     active,
-    countLabel: formatAccountCountLabel(count, language),
+    expanded: query ? platformAccounts.length > 0 : expandedPlatformIds.has(platform.id),
+    canToggle: !query,
+    accountsHtml: platformAccounts.map((account) => accountNavItem(account)).join(""),
   });
 }
 
-function accountItem(account: ChannelAccount) {
-  const text = copy[language];
+function normalizedChannelSearch() {
+  return channelSearchQuery.trim().toLowerCase();
+}
+
+function matchesPlatformSearch(platform: PlatformInfo, query: string) {
+  return platform.name.toLowerCase().includes(query);
+}
+
+function matchesAccountSearch(account: ChannelAccount, query: string) {
+  return account.nickname.toLowerCase().includes(query);
+}
+
+function accountNavItem(account: ChannelAccount) {
   const platform = platforms.find((item) => item.id === account.platformId);
 
-  return renderAccountItem({
+  return renderAccountNavItem({
     account,
-    text,
-    platform,
-    isRefreshing: refreshingAccountIds.has(account.id),
-    isOpeningHomepage: openingHomepageIds.has(account.id),
-    isUnavailable: account.status !== "active",
-    followersText: accountFollowersText(account, text, language),
-    syncText: accountSyncText(account, text, language),
-    fallbackAvatar: accountInitials(account.nickname),
-  });
-}
-
-function emptyAccounts(platform: PlatformInfo) {
-  return renderEmptyAccounts({
-    platform,
     text: copy[language],
+    platform,
+    active: selectedAccountId === account.id,
+    isUnavailable: account.status !== "active",
+    fallbackAvatar: accountInitials(account.nickname),
   });
 }
 

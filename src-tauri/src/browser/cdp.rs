@@ -31,15 +31,22 @@ pub(super) fn wait_for_page_websocket(port: u16, target_url: &str) -> Result<Str
     Err(format!("浏览器调试端口启动超时: {last_error}"))
 }
 
-pub(super) fn create_browser_page(port: u16, url: &str) -> Result<String, String> {
-    let encoded = form_urlencoded::byte_serialize(url.as_bytes()).collect::<String>();
-    let body = devtools_http(port, "PUT", &format!("/json/new?{encoded}"))?;
-    let value = serde_json::from_str::<Value>(&body).map_err(|error| format!("创建浏览器页面失败: {error}"))?;
-    value
-        .get("webSocketDebuggerUrl")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .ok_or_else(|| "创建浏览器页面后缺少调试地址".to_string())
+pub(super) fn wait_for_target_page_websocket(port: u16, target_url: &str) -> Result<String, String> {
+    let target_host = Url::parse(target_url)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()));
+    let started = Instant::now();
+    let mut last_error = String::new();
+    while started.elapsed() < Duration::from_secs(35) {
+        match target_page_websocket_url(port, target_host.as_deref()) {
+            Ok(url) => return Ok(url),
+            Err(error) => {
+                last_error = error;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(format!("浏览器目标页面加载超时: {last_error}"))
 }
 
 pub(super) fn page_websocket_url(port: u16, target_url: &str) -> Result<String, String> {
@@ -76,6 +83,29 @@ pub(super) fn page_websocket_url(port: u16, target_url: &str) -> Result<String, 
     blank_page
         .or(first_page)
         .ok_or_else(|| "没有找到可控制的浏览器页面".to_string())
+}
+
+fn target_page_websocket_url(port: u16, target_host: Option<&str>) -> Result<String, String> {
+    let body = devtools_http(port, "GET", "/json/list")?;
+    let pages = serde_json::from_str::<Value>(&body).map_err(|error| format!("读取浏览器页面失败: {error}"))?;
+    let Some(items) = pages.as_array() else {
+        return Err("浏览器页面列表格式无效".to_string());
+    };
+
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("page") {
+            continue;
+        }
+        let page_url = item.get("url").and_then(Value::as_str).unwrap_or_default();
+        if !page_url_matches_target(page_url, target_host) {
+            continue;
+        }
+        if let Some(websocket_url) = item.get("webSocketDebuggerUrl").and_then(Value::as_str) {
+            return Ok(websocket_url.to_string());
+        }
+    }
+
+    Err("没有找到目标浏览器页面".to_string())
 }
 
 pub(super) fn browser_websocket_url(port: u16) -> Result<String, String> {

@@ -150,6 +150,14 @@ pub(crate) fn kuaishou_home_info_api_url() -> &'static str {
     kuaishou::HOME_INFO_API
 }
 
+pub(crate) fn kuaishou_article_manage_video_url() -> &'static str {
+    kuaishou::ARTICLE_MANAGE_VIDEO_URL
+}
+
+pub(crate) fn kuaishou_article_manage_video_list_api_url() -> &'static str {
+    kuaishou::ARTICLE_MANAGE_VIDEO_LIST_API
+}
+
 fn account_search_url(prefix: &str, keyword: &str) -> Result<String, String> {
     if keyword.trim().is_empty() {
         return Err("账号缺少主页标识，无法打开主页".to_string());
@@ -170,16 +178,38 @@ fn domain_matches(domain: &str, rule: &DomainRule) -> bool {
     domain == host || (rule.include_subdomains && domain.ends_with(&format!(".{host}")))
 }
 
-use bilibili::probe_bilibili_creator_session;
-use douyin::{fetch_douyin_creator_account_from_cookie, has_douyin_login_cookie};
-use kuaishou::fetch_kuaishou_creator_account_from_cookie;
+use bilibili::{
+    fetch_bilibili_account_content,
+    fetch_bilibili_works_page,
+    probe_bilibili_creator_session,
+};
+use douyin::{
+    fetch_douyin_account_content,
+    fetch_douyin_creator_account_from_cookie,
+    fetch_douyin_works_page,
+    has_douyin_login_cookie,
+};
+use kuaishou::{
+    fetch_kuaishou_account_content,
+    fetch_kuaishou_creator_account_from_cookie,
+    fetch_kuaishou_works_page,
+};
 pub(crate) use kuaishou::{
     collect_kuaishou_plugin_account_from_browser_context,
+    fetch_kuaishou_account_content_with_profile,
     has_kuaishou_creator_login_cookie_header,
+    kuaishou_management_works_body,
+    parse_kuaishou_management_works_page,
 };
-use wechat_channels::fetch_wx_channels_account_from_cookie;
+use wechat_channels::{
+    fetch_wx_channels_account_content,
+    fetch_wx_channels_account_from_cookie,
+    fetch_wx_channels_works_page,
+};
 use xiaohongshu::{
+    fetch_xhs_account_content,
     fetch_xhs_plugin_account_from_cookie,
+    fetch_xhs_works_page,
     refresh_xhs_account_profile,
     xhs_profile_matches_account,
 };
@@ -193,6 +223,7 @@ pub(crate) struct PluginAccountInfo {
     pub(crate) nickname: String,
     pub(crate) avatar: String,
     pub(crate) fans_count: Option<u64>,
+    pub(crate) following_count: Option<u64>,
     pub(crate) like_count: Option<u64>,
     pub(crate) login_cookie: String,
 }
@@ -326,6 +357,10 @@ fn login_cookie_to_header(login_cookie: &str) -> String {
     trimmed.to_string()
 }
 
+pub(crate) fn plugin_cookie_header(login_cookie: &str) -> String {
+    login_cookie_to_header(login_cookie)
+}
+
 fn plugin_profile_matches_account(profile: &PluginAccountInfo, account: &ChannelAccount) -> bool {
     let profile_values = [&profile.uid, &profile.account, &profile.nickname]
         .into_iter()
@@ -453,6 +488,54 @@ pub(crate) async fn collect_plugin_account_info_from_cookie(
     }
 }
 
+pub(crate) async fn fetch_platform_account_content(
+    platform_id: &str,
+    cookie_header: &str,
+    login_cookie: String,
+    account_id: &str,
+) -> Result<ChannelAccountContent, String> {
+    match normalize_platform_id(platform_id).as_str() {
+        "xiaohongshu" => fetch_xhs_account_content(cookie_header, login_cookie, account_id).await,
+        "wechat-channels" => fetch_wx_channels_account_content(cookie_header, login_cookie, account_id).await,
+        "douyin" => fetch_douyin_account_content(cookie_header, login_cookie, account_id).await,
+        "bilibili" => fetch_bilibili_account_content(cookie_header, login_cookie, account_id).await,
+        "kuaishou" => fetch_kuaishou_account_content(cookie_header, login_cookie, account_id).await,
+        _ => Ok(ChannelAccountContent {
+            account_id: account_id.to_string(),
+            platform_id: normalize_platform_id(platform_id),
+            sync_status: "unsupported".to_string(),
+            error: Some("当前平台的数据看板暂未接入。".to_string()),
+            ..Default::default()
+        }),
+    }
+}
+
+pub(crate) async fn fetch_platform_works_page(
+    platform_id: &str,
+    cookie_header: &str,
+    login_cookie: &str,
+    account_id: &str,
+    page_key: &str,
+    work_type: Option<&str>,
+) -> Result<ChannelWorksPage, String> {
+    match normalize_platform_id(platform_id).as_str() {
+        "xiaohongshu" => fetch_xhs_works_page(cookie_header, login_cookie, account_id, page_key).await,
+        "wechat-channels" => fetch_wx_channels_works_page(cookie_header, account_id, page_key, work_type).await,
+        "douyin" => fetch_douyin_works_page(cookie_header, account_id, page_key).await,
+        "bilibili" => fetch_bilibili_works_page(cookie_header, account_id, page_key, work_type).await,
+        "kuaishou" => fetch_kuaishou_works_page(cookie_header, account_id, page_key).await,
+        _ => Ok(ChannelWorksPage {
+            account_id: account_id.to_string(),
+            platform_id: normalize_platform_id(platform_id),
+            page_key: page_key.to_string(),
+            work_type: work_type.map(ToString::to_string),
+            sync_status: "unsupported".to_string(),
+            error: Some("当前平台的作品列表暂未接入。".to_string()),
+            ..Default::default()
+        }),
+    }
+}
+
 fn plugin_account_uid(account: &PluginAccountInfo) -> String {
     if account.uid.trim().is_empty() {
         account.account.clone()
@@ -481,6 +564,7 @@ pub(crate) fn plugin_info_to_channel_account(
         nickname: account.nickname.clone(),
         avatar: account.avatar.clone(),
         followers: account.fans_count,
+        following: account.following_count,
         likes: account.like_count,
         status: AccountStatus::Active,
         created_at: now,
@@ -495,6 +579,16 @@ async fn request_plugin_json(
     cookie_header: &str,
     headers: &[(&str, &str)],
 ) -> Result<Value, String> {
+    request_plugin_json_with_body(method, url, cookie_header, headers, None).await
+}
+
+async fn request_plugin_json_with_body(
+    method: &str,
+    url: &str,
+    cookie_header: &str,
+    headers: &[(&str, &str)],
+    body: Option<Value>,
+) -> Result<Value, String> {
     let client = Client::new();
     let mut request = if method.eq_ignore_ascii_case("POST") {
         client.post(url)
@@ -507,9 +601,10 @@ async fn request_plugin_json(
         .header("Accept", "application/json, text/plain, */*")
         .timeout(std::time::Duration::from_secs(18));
     if method.eq_ignore_ascii_case("POST") {
+        let body = body.unwrap_or_else(|| Value::Object(Default::default()));
         request = request
             .header("Content-Type", "application/json;charset=utf-8")
-            .body("{}");
+            .json(&body);
     }
     for (key, value) in headers {
         request = request.header(*key, *value);
@@ -587,6 +682,10 @@ fn should_materialize_avatar(platform_id: &str, value: &str) -> bool {
 }
 
 async fn materialize_account_avatar(platform_id: &str, value: String) -> String {
+    materialize_platform_image(platform_id, value).await
+}
+
+pub(crate) async fn materialize_platform_image(platform_id: &str, value: String) -> String {
     let value = normalize_platform_image_url(platform_id, value);
     if !should_materialize_avatar(platform_id, &value) {
         return value;
@@ -678,11 +777,15 @@ fn avatar_mime_type(content_type: Option<&str>, bytes: &[u8]) -> String {
 }
 
 pub(crate) fn normalize_platform_image_url(platform_id: &str, value: String) -> String {
-    let value = normalize_image_url(value);
+    let mut value = normalize_image_url(value);
+    let platform_id = normalize_platform_id(platform_id);
+    if matches!(platform_id.as_str(), "xiaohongshu" | "bilibili") && value.starts_with("http://") {
+        value = value.replacen("http://", "https://", 1);
+    }
     if value.trim().is_empty() || value.starts_with("data:image") || Url::parse(&value).is_ok() {
         return value;
     }
-    if normalize_platform_id(platform_id) == "xiaohongshu" {
+    if platform_id == "xiaohongshu" {
         return format!("https://img.xiaohongshu.com/{}", value.trim_start_matches('/'));
     }
     value

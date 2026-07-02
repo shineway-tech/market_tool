@@ -70,6 +70,7 @@ export interface ChannelAccount {
   nickname: string;
   avatar: string;
   followers?: number | null;
+  following?: number | null;
   likes?: number | null;
   status: AccountStatus;
   createdAt: string;

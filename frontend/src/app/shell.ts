@@ -46,7 +46,7 @@ export function renderAppShell({
         </div>
       </aside>
 
-      <main class="main">
+      <main class="main ${activeMenuId === "channels" ? "main-channels" : ""}">
         ${mainContent}
       </main>
 

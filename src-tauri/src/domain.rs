@@ -60,6 +60,8 @@ pub(crate) struct ChannelAccount {
     pub(crate) nickname: String,
     pub(crate) avatar: String,
     pub(crate) followers: Option<u64>,
+    #[serde(default)]
+    pub(crate) following: Option<u64>,
     pub(crate) likes: Option<u64>,
     pub(crate) status: AccountStatus,
     pub(crate) created_at: DateTime<Utc>,
@@ -134,6 +136,148 @@ pub(crate) struct AuthTaskStatus {
     pub(crate) status: String,
     pub(crate) account: Option<ChannelAccount>,
     pub(crate) message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelAccountContentRequest {
+    pub(crate) account_id: String,
+    pub(crate) user_id: String,
+    #[serde(default)]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelWorksPageRequest {
+    pub(crate) account_id: String,
+    pub(crate) user_id: String,
+    #[serde(default)]
+    pub(crate) page_key: Option<String>,
+    #[serde(default)]
+    pub(crate) work_type: Option<String>,
+    #[serde(default)]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelAccountProfileSnapshot {
+    pub(crate) account_id: String,
+    pub(crate) platform_id: String,
+    pub(crate) followers: Option<u64>,
+    pub(crate) following: Option<u64>,
+    pub(crate) likes: Option<u64>,
+    pub(crate) last_sync_at: Option<DateTime<Utc>>,
+    pub(crate) updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub(crate) sync_status: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelOverviewMetric {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) value: Option<String>,
+    pub(crate) compare_label: Option<String>,
+    pub(crate) trend: Option<String>,
+    pub(crate) tone: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelAccountOverview {
+    pub(crate) account_id: String,
+    pub(crate) platform_id: String,
+    pub(crate) period_days: u16,
+    pub(crate) metrics: Vec<ChannelOverviewMetric>,
+    pub(crate) summary: Option<String>,
+    pub(crate) updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub(crate) sync_status: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelWorkMetric {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelContentWork {
+    pub(crate) id: String,
+    pub(crate) platform_id: String,
+    pub(crate) account_id: String,
+    pub(crate) title: String,
+    pub(crate) cover_url: Option<String>,
+    pub(crate) link: Option<String>,
+    pub(crate) published_at: Option<DateTime<Utc>>,
+    pub(crate) status: String,
+    pub(crate) views: Option<u64>,
+    pub(crate) impressions: Option<u64>,
+    pub(crate) likes: Option<u64>,
+    pub(crate) collects: Option<u64>,
+    pub(crate) comments: Option<u64>,
+    pub(crate) shares: Option<u64>,
+    pub(crate) cover_click_rate: Option<String>,
+    pub(crate) avg_view_time: Option<String>,
+    pub(crate) gained_followers: Option<i64>,
+    pub(crate) data_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub(crate) metrics: Vec<ChannelWorkMetric>,
+    #[serde(default)]
+    pub(crate) badges: Vec<String>,
+    #[serde(default)]
+    pub(crate) work_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelWorksPage {
+    pub(crate) account_id: String,
+    pub(crate) platform_id: String,
+    pub(crate) page_key: String,
+    #[serde(default)]
+    pub(crate) work_type: Option<String>,
+    pub(crate) next_page_key: Option<String>,
+    pub(crate) has_more: bool,
+    pub(crate) works: Vec<ChannelContentWork>,
+    pub(crate) updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub(crate) sync_status: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelAccountContent {
+    pub(crate) account_id: String,
+    pub(crate) platform_id: String,
+    pub(crate) profile: Option<ChannelAccountProfileSnapshot>,
+    #[serde(default)]
+    pub(crate) overview_yesterday: Option<ChannelAccountOverview>,
+    pub(crate) overview_seven: Option<ChannelAccountOverview>,
+    pub(crate) overview_thirty: Option<ChannelAccountOverview>,
+    #[serde(default)]
+    pub(crate) overview_ninety: Option<ChannelAccountOverview>,
+    #[serde(default)]
+    pub(crate) overview_history: Option<ChannelAccountOverview>,
+    #[serde(default)]
+    pub(crate) overview_total: Option<ChannelAccountOverview>,
+    pub(crate) latest_work: Option<ChannelContentWork>,
+    #[serde(default)]
+    pub(crate) latest_work_seven: Option<ChannelContentWork>,
+    #[serde(default)]
+    pub(crate) latest_work_thirty: Option<ChannelContentWork>,
+    #[serde(default)]
+    pub(crate) sync_status: String,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug)]

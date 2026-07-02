@@ -78,7 +78,7 @@ pub(crate) fn update_plugin_account_profile(
         .iter_mut()
         .find(|item| item.id == account_id && account_belongs_to_user(item, user_id))
         .ok_or_else(|| "账号不存在".to_string())?;
-    if !profile.nickname.trim().is_empty() {
+    if !profile.nickname.trim().is_empty() && should_update_account_nickname(account, &profile.nickname) {
         account.nickname = profile.nickname.clone();
     }
     if !profile.avatar.trim().is_empty() {
@@ -87,10 +87,13 @@ pub(crate) fn update_plugin_account_profile(
     if let Some(fans_count) = profile.fans_count {
         account.followers = Some(fans_count);
     }
+    if let Some(following_count) = profile.following_count {
+        account.following = Some(following_count);
+    }
     if let Some(like_count) = profile.like_count {
         account.likes = Some(like_count);
     }
-    if account.uid.trim().is_empty() {
+    if account.uid.trim().is_empty() || normalize_platform_id(&account.platform_id) == "xiaohongshu" {
         account.uid = profile.uid.clone();
     }
     account.status = AccountStatus::Active;
@@ -100,6 +103,28 @@ pub(crate) fn update_plugin_account_profile(
     persist_store(app, &store)?;
     emit_account_updated(app, &cloned);
     Ok(cloned)
+}
+
+fn should_update_account_nickname(account: &ChannelAccount, nickname: &str) -> bool {
+    let nickname = nickname.trim();
+    if nickname.is_empty() {
+        return false;
+    }
+    if normalize_platform_id(&account.platform_id) == "kuaishou"
+        && !account.nickname.trim().is_empty()
+        && is_kuaishou_cookie_fallback_nickname(nickname)
+    {
+        return false;
+    }
+    true
+}
+
+fn is_kuaishou_cookie_fallback_nickname(nickname: &str) -> bool {
+    nickname == "快手账号"
+        || nickname
+            .strip_prefix("快手账号 ")
+            .map(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
+            .unwrap_or(false)
 }
 
 
@@ -173,6 +198,251 @@ pub(crate) fn persist_store(app: &AppHandle, store: &StoreFile) -> Result<(), St
     write_store_to_db(&mut conn, store).map_err(|error| error.to_string())
 }
 
+pub(crate) fn read_channel_account_content_cache(
+    app: &AppHandle,
+    account_id: &str,
+    platform_id: &str,
+) -> Result<ChannelAccountContent, String> {
+    let conn = open_content_db(app)?;
+    let profile = read_json_row::<ChannelAccountProfileSnapshot, _>(
+        &conn,
+        "SELECT profile_json FROM account_profile_snapshots WHERE account_id = ?1",
+        params![account_id],
+    )?;
+    let overview_yesterday = read_overview_cache(&conn, account_id, 1)?;
+    let overview_seven = if platform_id == "wechat-channels" {
+        overview_yesterday.clone()
+    } else {
+        read_overview_cache(&conn, account_id, 7)?
+    };
+    let overview_thirty = read_overview_cache(&conn, account_id, 30)?;
+    let overview_ninety = read_overview_cache(&conn, account_id, 90)?;
+    let overview_history = read_overview_cache(&conn, account_id, 36500)?;
+    let overview_total = read_overview_cache(&conn, account_id, 65535)?;
+    let latest_work = read_json_row::<ChannelContentWork, _>(
+        &conn,
+        "SELECT work_json FROM account_latest_works WHERE account_id = ?1",
+        params![account_id],
+    )?;
+    let latest_work_seven = if platform_id == "wechat-channels" {
+        read_latest_work_period_cache(&conn, account_id, 7)?
+    } else {
+        read_latest_work_period_cache(&conn, account_id, 7)?
+            .or_else(|| latest_work.clone())
+    };
+    let latest_work_thirty = read_latest_work_period_cache(&conn, account_id, 30)?;
+
+    Ok(ChannelAccountContent {
+        account_id: account_id.to_string(),
+        platform_id: platform_id.to_string(),
+        profile,
+        overview_yesterday,
+        overview_seven,
+        overview_thirty,
+        overview_ninety,
+        overview_history,
+        overview_total,
+        latest_work,
+        latest_work_seven,
+        latest_work_thirty,
+        sync_status: "cached".to_string(),
+        error: None,
+    })
+}
+
+pub(crate) fn write_channel_account_content_cache(
+    app: &AppHandle,
+    content: &ChannelAccountContent,
+) -> Result<(), String> {
+    let mut conn = open_content_db(app)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = Utc::now().to_rfc3339();
+
+    if let Some(profile) = content.profile.as_ref() {
+        tx.execute(
+            r#"
+            INSERT INTO account_profile_snapshots(account_id, platform_id, profile_json, updated_at)
+            VALUES(?1, ?2, ?3, ?4)
+            ON CONFLICT(account_id) DO UPDATE SET
+              platform_id = excluded.platform_id,
+              profile_json = excluded.profile_json,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                &profile.account_id,
+                &profile.platform_id,
+                serde_json::to_string(profile).map_err(|error| error.to_string())?,
+                profile.updated_at.as_ref().map(DateTime::to_rfc3339).unwrap_or_else(|| now.clone()),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    for overview in [
+        &content.overview_yesterday,
+        &content.overview_seven,
+        &content.overview_thirty,
+        &content.overview_ninety,
+        &content.overview_history,
+        &content.overview_total,
+    ]
+        .into_iter()
+        .flatten()
+    {
+        tx.execute(
+            r#"
+            INSERT INTO account_overviews(account_id, platform_id, period_days, overview_json, updated_at)
+            VALUES(?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(account_id, period_days) DO UPDATE SET
+              platform_id = excluded.platform_id,
+              overview_json = excluded.overview_json,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                &overview.account_id,
+                &overview.platform_id,
+                i64::from(overview.period_days),
+                serde_json::to_string(overview).map_err(|error| error.to_string())?,
+                overview.updated_at.as_ref().map(DateTime::to_rfc3339).unwrap_or_else(|| now.clone()),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    if let Some(work) = content.latest_work.as_ref() {
+        tx.execute(
+            r#"
+            INSERT INTO account_latest_works(account_id, platform_id, work_json, updated_at)
+            VALUES(?1, ?2, ?3, ?4)
+            ON CONFLICT(account_id) DO UPDATE SET
+              platform_id = excluded.platform_id,
+              work_json = excluded.work_json,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                &work.account_id,
+                &work.platform_id,
+                serde_json::to_string(work).map_err(|error| error.to_string())?,
+                now,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    for (period_days, work) in [
+        (7_i64, content.latest_work_seven.as_ref()),
+        (30_i64, content.latest_work_thirty.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(period_days, work)| work.map(|work| (period_days, work)))
+    {
+        tx.execute(
+            r#"
+            INSERT INTO account_latest_work_periods(account_id, platform_id, period_days, work_json, updated_at)
+            VALUES(?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(account_id, period_days) DO UPDATE SET
+              platform_id = excluded.platform_id,
+              work_json = excluded.work_json,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                &work.account_id,
+                &work.platform_id,
+                period_days,
+                serde_json::to_string(work).map_err(|error| error.to_string())?,
+                now,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+
+    tx.commit().map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_channel_works_page_cache(
+    app: &AppHandle,
+    account_id: &str,
+    platform_id: &str,
+    page_key: &str,
+) -> Result<ChannelWorksPage, String> {
+    let conn = open_content_db(app)?;
+    let cached = read_json_row::<ChannelWorksPage, _>(
+        &conn,
+        "SELECT works_json FROM account_work_pages WHERE account_id = ?1 AND page_key = ?2",
+        (account_id, page_key),
+    )?;
+    Ok(cached.map(|mut page| {
+        page.sync_status = "cached".to_string();
+        page
+    })
+    .unwrap_or_else(|| {
+        ChannelWorksPage {
+            account_id: account_id.to_string(),
+            platform_id: platform_id.to_string(),
+            page_key: page_key.to_string(),
+            work_type: None,
+            next_page_key: None,
+            has_more: false,
+            works: Vec::new(),
+            updated_at: None,
+            sync_status: "empty".to_string(),
+            error: None,
+        }
+    }))
+}
+
+pub(crate) fn write_channel_works_page_cache(
+    app: &AppHandle,
+    page: &ChannelWorksPage,
+) -> Result<(), String> {
+    let conn = open_content_db(app)?;
+    conn.execute(
+        r#"
+        INSERT INTO account_work_pages(account_id, platform_id, page_key, next_page_key, has_more, works_json, updated_at)
+        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(account_id, page_key) DO UPDATE SET
+          platform_id = excluded.platform_id,
+          next_page_key = excluded.next_page_key,
+          has_more = excluded.has_more,
+          works_json = excluded.works_json,
+          updated_at = excluded.updated_at
+        "#,
+        params![
+            &page.account_id,
+            &page.platform_id,
+            &page.page_key,
+            page.next_page_key.as_deref(),
+            if page.has_more { 1_i64 } else { 0_i64 },
+            serde_json::to_string(page).map_err(|error| error.to_string())?,
+            page.updated_at.as_ref().map(DateTime::to_rfc3339).unwrap_or_else(|| Utc::now().to_rfc3339()),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn delete_channel_account_content_cache(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<(), String> {
+    let mut conn = open_content_db(app)?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    for table in [
+        "account_profile_snapshots",
+        "account_overviews",
+        "account_latest_works",
+        "account_latest_work_periods",
+        "account_work_pages",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE account_id = ?1"),
+            params![account_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
 pub(crate) fn store_path(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = app.path().app_data_dir()?;
     Ok(dir.join(LEGACY_STORE_FILE))
@@ -214,6 +484,7 @@ fn init_local_db(conn: &Connection) -> rusqlite::Result<()> {
           nickname TEXT NOT NULL,
           avatar TEXT NOT NULL,
           followers INTEGER,
+          following INTEGER,
           likes INTEGER,
           status TEXT NOT NULL,
           created_at TEXT NOT NULL,
@@ -240,13 +511,82 @@ fn init_local_db(conn: &Connection) -> rusqlite::Result<()> {
           message TEXT,
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS account_profile_snapshots (
+          account_id TEXT PRIMARY KEY,
+          platform_id TEXT NOT NULL,
+          profile_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS account_overviews (
+          account_id TEXT NOT NULL,
+          platform_id TEXT NOT NULL,
+          period_days INTEGER NOT NULL,
+          overview_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(account_id, period_days)
+        );
+
+        CREATE TABLE IF NOT EXISTS account_latest_works (
+          account_id TEXT PRIMARY KEY,
+          platform_id TEXT NOT NULL,
+          work_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS account_latest_work_periods (
+          account_id TEXT NOT NULL,
+          platform_id TEXT NOT NULL,
+          period_days INTEGER NOT NULL,
+          work_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(account_id, period_days)
+        );
+
+        CREATE TABLE IF NOT EXISTS account_work_pages (
+          account_id TEXT NOT NULL,
+          platform_id TEXT NOT NULL,
+          page_key TEXT NOT NULL,
+          next_page_key TEXT,
+          has_more INTEGER NOT NULL DEFAULT 0,
+          works_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(account_id, page_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_account_overviews_account_updated
+          ON account_overviews(account_id, updated_at);
+
+        CREATE INDEX IF NOT EXISTS idx_account_work_pages_account_updated
+          ON account_work_pages(account_id, updated_at);
         "#,
     )?;
+    ensure_platform_accounts_columns(conn)?;
     conn.execute(
         "INSERT OR IGNORE INTO app_migrations(name, applied_at) VALUES(?1, ?2)",
         params!["initial_sqlite_store", Utc::now().to_rfc3339()],
     )?;
     Ok(())
+}
+
+fn ensure_platform_accounts_columns(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_has_column(conn, "platform_accounts", "following")? {
+        conn.execute("ALTER TABLE platform_accounts ADD COLUMN following INTEGER", [])?;
+    }
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn read_store_from_db(conn: &Connection) -> Result<StoreFile, Box<dyn std::error::Error>> {
@@ -263,7 +603,7 @@ fn read_store_from_db(conn: &Connection) -> Result<StoreFile, Box<dyn std::error
 
     let mut account_statement = conn.prepare(
         r#"
-        SELECT id, user_id, platform_id, uid, nickname, avatar, followers, likes,
+        SELECT id, user_id, platform_id, uid, nickname, avatar, followers, following, likes,
                status, created_at, updated_at, last_sync_at
           FROM platform_accounts
          ORDER BY platform_id ASC, updated_at DESC
@@ -272,11 +612,12 @@ fn read_store_from_db(conn: &Connection) -> Result<StoreFile, Box<dyn std::error
     let accounts = account_statement
         .query_map([], |row| {
             let followers = row.get::<_, Option<i64>>(6)?.and_then(i64_to_u64);
-            let likes = row.get::<_, Option<i64>>(7)?.and_then(i64_to_u64);
-            let created_at = parse_db_time(row.get::<_, String>(9)?);
-            let updated_at = parse_db_time(row.get::<_, String>(10)?);
+            let following = row.get::<_, Option<i64>>(7)?.and_then(i64_to_u64);
+            let likes = row.get::<_, Option<i64>>(8)?.and_then(i64_to_u64);
+            let created_at = parse_db_time(row.get::<_, String>(10)?);
+            let updated_at = parse_db_time(row.get::<_, String>(11)?);
             let last_sync_at = row
-                .get::<_, Option<String>>(11)?
+                .get::<_, Option<String>>(12)?
                 .map(parse_db_time);
 
             Ok(ChannelAccount {
@@ -287,8 +628,9 @@ fn read_store_from_db(conn: &Connection) -> Result<StoreFile, Box<dyn std::error
                 nickname: row.get(4)?,
                 avatar: row.get(5)?,
                 followers,
+                following,
                 likes,
-                status: account_status_from_db(row.get::<_, String>(8)?.as_str()),
+                status: account_status_from_db(row.get::<_, String>(9)?.as_str()),
                 created_at,
                 updated_at,
                 last_sync_at,
@@ -318,6 +660,54 @@ fn read_store_from_db(conn: &Connection) -> Result<StoreFile, Box<dyn std::error
     })
 }
 
+fn open_content_db(app: &AppHandle) -> Result<Connection, String> {
+    let db_path = local_db_path(app).map_err(|error| error.to_string())?;
+    let conn = open_local_db(&db_path).map_err(|error| error.to_string())?;
+    init_local_db(&conn).map_err(|error| error.to_string())?;
+    Ok(conn)
+}
+
+fn read_overview_cache(
+    conn: &Connection,
+    account_id: &str,
+    period_days: u16,
+) -> Result<Option<ChannelAccountOverview>, String> {
+    read_json_row::<ChannelAccountOverview, _>(
+        conn,
+        "SELECT overview_json FROM account_overviews WHERE account_id = ?1 AND period_days = ?2",
+        (account_id, i64::from(period_days)),
+    )
+}
+
+fn read_latest_work_period_cache(
+    conn: &Connection,
+    account_id: &str,
+    period_days: u16,
+) -> Result<Option<ChannelContentWork>, String> {
+    read_json_row::<ChannelContentWork, _>(
+        conn,
+        "SELECT work_json FROM account_latest_work_periods WHERE account_id = ?1 AND period_days = ?2",
+        (account_id, i64::from(period_days)),
+    )
+}
+
+fn read_json_row<T, P>(
+    conn: &Connection,
+    sql: &str,
+    params: P,
+) -> Result<Option<T>, String>
+where
+    T: for<'de> serde::Deserialize<'de>,
+    P: rusqlite::Params,
+{
+    let text = conn
+        .query_row(sql, params, |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(|error| error.to_string())?;
+    text.map(|value| serde_json::from_str::<T>(&value).map_err(|error| error.to_string()))
+        .transpose()
+}
+
 fn write_store_to_db(conn: &mut Connection, store: &StoreFile) -> Result<(), Box<dyn std::error::Error>> {
     let tx = conn.transaction()?;
     tx.execute(
@@ -336,9 +726,9 @@ fn write_store_to_db(conn: &mut Connection, store: &StoreFile) -> Result<(), Box
         tx.execute(
             r#"
             INSERT INTO platform_accounts(
-              id, user_id, platform_id, uid, nickname, avatar, followers, likes,
+              id, user_id, platform_id, uid, nickname, avatar, followers, following, likes,
               status, created_at, updated_at, last_sync_at
-            ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             "#,
             params![
                 &account.id,
@@ -348,6 +738,7 @@ fn write_store_to_db(conn: &mut Connection, store: &StoreFile) -> Result<(), Box
                 &account.nickname,
                 &account.avatar,
                 account.followers.map(u64_to_i64),
+                account.following.map(u64_to_i64),
                 account.likes.map(u64_to_i64),
                 account_status_to_db(&account.status),
                 account.created_at.to_rfc3339(),
@@ -545,6 +936,7 @@ mod tests {
             nickname: "小红书账号".to_string(),
             avatar: "https://example.test/avatar.png".to_string(),
             followers: Some(123),
+            following: Some(67),
             likes: Some(45),
             status: AccountStatus::Active,
             created_at: now,
@@ -572,6 +964,7 @@ mod tests {
         assert_eq!(loaded.accounts[0].user_id.as_deref(), Some("user-1"));
         assert_eq!(loaded.accounts[0].platform_id, "xiaohongshu");
         assert_eq!(loaded.accounts[0].followers, Some(123));
+        assert_eq!(loaded.accounts[0].following, Some(67));
         assert_eq!(loaded.account_secrets["account-1"].login_cookie.as_deref(), Some("a=b"));
         assert_eq!(
             loaded.account_secrets["account-1"].webview_session_id.as_deref(),

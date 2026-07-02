@@ -56,16 +56,15 @@
 .theme-light .page-head h1,
 .theme-light .selected-platform h2,
 .theme-light .account-summary strong,
-.theme-light .account-line h3,
 .theme-light .settings-card h2,
 .theme-light .release-title-block h2,
 .theme-light .release-item h3,
-.theme-light .placeholder-panel h2,
-.theme-light .empty-state h3 {
+.theme-light .placeholder-panel h2 {
   color: #1b3339;
 }
 
 .theme-light .platform-panel,
+.theme-light .workspace-panel,
 .theme-light .account-panel,
 .theme-light .settings-card,
 .theme-light .placeholder-panel,
@@ -77,6 +76,30 @@
   background: #ffffff;
   border-color: rgba(32, 70, 78, 0.13);
   box-shadow: 0 1px 2px rgba(20, 52, 58, 0.05);
+}
+
+.theme-light .channel-layout {
+  background: #f5f7f8;
+}
+
+.theme-light .platform-panel {
+  background: #edf2f3;
+  border-right-color: rgba(32, 70, 78, 0.12);
+  box-shadow: none;
+}
+
+.theme-light .workspace-panel {
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.theme-light .platform-search-box {
+  color: #7b8c91;
+  background: #ffffff;
+}
+
+.theme-light .platform-search-box input {
+  color: #1b3339;
 }
 
 .theme-light .panel-title {
@@ -91,19 +114,90 @@
   background: #e4f2ee;
 }
 
-.theme-light .platform-item:hover {
+.theme-light .platform-tree-group.active .platform-tree-head {
+  background: #b9e7d8;
+}
+
+.theme-light .platform-select:hover .platform-copy strong,
+.theme-light .workspace-identity h2,
+.theme-light .workspace-head-metric strong,
+.theme-light .workspace-tab.active,
+.theme-light .metric-card strong,
+.theme-light .xhs-overview-title strong,
+.theme-light .xhs-metric-card strong,
+.theme-light .content-block-head h3,
+.theme-light .content-row-title h3,
+.theme-light .latest-work-title-row h3,
+.theme-light .latest-work-metrics strong,
+.theme-light .account-data-main strong {
+  color: #1b3339;
+}
+
+.theme-light .platform-tree-group.active .platform-copy strong,
+.theme-light .platform-tree-group.active .platform-count-text,
+.theme-light .platform-tree-group.active .platform-toggle {
+  color: #0d5f4e;
+}
+
+.theme-light .workspace-tab.active {
+  background: #eef7f4;
+  border-color: rgba(20, 143, 112, 0.18);
+}
+
+.theme-light .platform-toggle,
+.theme-light .workspace-identity p,
+.theme-light .workspace-head-metric,
+.theme-light .workspace-head-metric em,
+.theme-light .content-block-head span,
+.theme-light .content-row-main p,
+.theme-light .content-row-main em,
+.theme-light .account-data-main span,
+.theme-light .content-empty,
+.theme-light .metric-card span,
+.theme-light .xhs-overview-title span,
+.theme-light .xhs-metric-card span,
+.theme-light .xhs-metric-card em,
+.theme-light .latest-work-title-row span,
+.theme-light .latest-work-metrics em,
+.theme-light .xhs-summary,
+.theme-light .works-pagination {
+  color: #687b80;
+}
+
+.theme-light .workspace-head-metric + .workspace-head-metric {
+  border-left-color: rgba(32, 70, 78, 0.16);
+}
+
+.theme-light .account-nav-item:hover {
   background: #f4f8f8;
-  border-color: rgba(32, 70, 78, 0.12);
 }
 
-.theme-light .platform-item.active {
-  background: #e5f2ee;
-  border-color: rgba(20, 143, 112, 0.22);
-  box-shadow: inset 3px 0 0 var(--green);
+.theme-light .account-nav-item.active {
+  background: #b9e7d8;
+  border-color: transparent;
 }
 
-.theme-light .platform-copy em,
-.theme-light .account-meta,
+.theme-light .account-nav-item.active .account-nav-copy strong {
+  color: #0d5f4e;
+}
+
+.theme-light .account-nav-copy strong,
+.theme-light .account-data-metrics span {
+  color: #1b3339;
+}
+
+.theme-light .platform-count-text {
+  color: #829297;
+}
+
+.theme-light .account-nav-item.is-unavailable .account-nav-copy strong {
+  color: #87979b;
+}
+
+.theme-light .account-nav-item.active.is-unavailable .account-nav-copy strong {
+  color: #0d5f4e;
+}
+
 .theme-light .account-summary span,
 .theme-light .page-head p,
 .theme-light .account-panel-head p,
@@ -142,22 +236,6 @@
   background: #edf3f4;
 }
 
-.theme-light .count,
-.theme-light .mini-login {
-  color: #0f765e;
-}
-
-.theme-light .mini-login {
-  background: #eef7f4;
-  border-color: rgba(20, 143, 112, 0.18);
-}
-
-.theme-light .mini-login:hover {
-  color: #0a5f4b;
-  background: #dff0ea;
-  border-color: rgba(20, 143, 112, 0.3);
-}
-
 .theme-light .primary-btn {
   color: #ffffff;
   background: #148f70;
@@ -171,47 +249,87 @@
 }
 
 .theme-light .ghost-btn,
-.theme-light .icon-btn {
+.theme-light .workspace-action {
   color: #38565d;
-  background: #ffffff;
-  border-color: rgba(32, 70, 78, 0.16);
+  background: #f2f6f7;
+  border-color: transparent;
 }
 
 .theme-light .ghost-btn:hover,
-.theme-light .icon-btn:hover {
+.theme-light .workspace-action:hover {
   color: #12343a;
   background: #f2f7f6;
   border-color: rgba(20, 143, 112, 0.3);
 }
 
-.theme-light .account-card,
+.theme-light .workspace-action.danger:hover {
+  color: var(--danger);
+  border-color: rgba(201, 80, 92, 0.3);
+}
+
+.theme-light .account-data-action:hover {
+  background: #e5f3ed;
+}
+
+.theme-light .account-copy-btn:hover {
+  color: #12343a;
+  background: #dcece7;
+}
+
+.theme-light .metric-card,
+.theme-light .content-row,
+.theme-light .latest-work-card,
+.theme-light .account-data-row,
 .theme-light .activity-row {
-  background: #f8fbfb;
-  border-color: rgba(32, 70, 78, 0.1);
+  background: #f6f9f9;
+  border-color: transparent;
 }
 
-.theme-light .account-card.is-unavailable {
-  background: #f2f6f6;
+.theme-light .segmented-control,
+.theme-light .xhs-metric-grid,
+.theme-light .account-content-loading {
+  background: #f6f9f9;
 }
 
-.theme-light .account-avatar {
-  color: #0f624f;
-  background: #e4f2ee;
+.theme-light .segmented-control button.active {
+  color: #0d5f4e;
+  background: #d9f0e7;
 }
 
-.theme-light .status.active {
-  color: #0b6d57;
-  background: #dff1eb;
+.theme-light .content-cover {
+  background: #e7eeee;
 }
 
-.theme-light .status.expired {
-  color: #946200;
-  background: #fff2ce;
+.theme-light .latest-work-media,
+.theme-light .latest-work-metrics span {
+  background: #edf3f4;
 }
 
-.theme-light .status.pending {
-  color: #246a96;
-  background: #e3f1fb;
+.theme-light .xhs-metric-card {
+  border-color: rgba(32, 70, 78, 0.13);
+}
+
+.theme-light .status-pinned {
+  color: #8a5f00;
+  background: rgba(180, 127, 0, 0.14);
+}
+
+.theme-light .status-visibility {
+  color: #48636a;
+  background: rgba(32, 70, 78, 0.1);
+}
+
+.theme-light .status-work-type {
+  color: #23658c;
+  background: rgba(35, 101, 140, 0.12);
+}
+
+.theme-light .xhs-metric-card em.up {
+  color: #d33d53;
+}
+
+.theme-light .xhs-metric-card em.down {
+  color: #0f8a5f;
 }
 
 .theme-light input,

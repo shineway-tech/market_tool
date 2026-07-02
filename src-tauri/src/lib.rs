@@ -56,6 +56,8 @@ pub fn run() {
             commands::channel::start_channel_login,
             commands::channel::get_auth_task_status,
             commands::channel::refresh_channel_account,
+            commands::channel::sync_channel_account_content,
+            commands::channel::load_channel_account_works_page,
             commands::channel::mark_channel_account_unavailable,
             commands::channel::open_account_homepage,
             commands::channel::delete_channel_account

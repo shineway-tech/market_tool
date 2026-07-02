@@ -1,6 +1,5 @@
 import type { AccountStatus, ChannelAccount, LanguageMode } from "../domain/types";
 import type { CopyText } from "../i18n/copy";
-import { copy } from "../i18n/copy";
 import { escapeHtml } from "./html";
 
 export function statusLabel(status: AccountStatus, text: CopyText) {
@@ -9,25 +8,18 @@ export function statusLabel(status: AccountStatus, text: CopyText) {
   return text.statusPending;
 }
 
-export function accountCountLabel(count: number, language: LanguageMode) {
-  if (language === "zh") {
-    return count > 0 ? `${count} ${copy.zh.accountUnit}` : copy.zh.notConnected;
-  }
-  return count > 0 ? `${count} ${count === 1 ? "account" : copy.en.accountUnit}` : copy.en.notConnected;
+export function formatFollowers(value: number | null | undefined, language: LanguageMode) {
+  if (value === undefined || value === null) return "-";
+  if (language === "zh" && value >= 10000) return `${(value / 10000).toFixed(1)}万`;
+  return new Intl.NumberFormat(language === "zh" ? "zh-CN" : "en-US").format(value);
 }
 
-export function formatFollowers(value: number | null | undefined, language: LanguageMode, text: CopyText) {
-  if (value === undefined || value === null) return text.fansPending;
-  if (value >= 10000) return `${(value / 10000).toFixed(1)} 万粉丝`;
-  return language === "zh" ? `${value} 粉丝` : `${value} followers`;
-}
-
-export function formatFollowersTotal(items: ChannelAccount[], language: LanguageMode, text: CopyText) {
+export function formatFollowersTotal(items: ChannelAccount[], language: LanguageMode) {
   const values = items
     .map((item) => item.followers)
     .filter((value): value is number => typeof value === "number");
   if (!values.length) return "-";
-  return formatFollowers(values.reduce((sum, value) => sum + value, 0), language, text);
+  return formatFollowers(values.reduce((sum, value) => sum + value, 0), language);
 }
 
 export function formatDate(value: string, language: LanguageMode) {

@@ -179,7 +179,6 @@ jobs:
           done
 
       - name: Prepare macOS release artifacts
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           set -euo pipefail
 
@@ -202,6 +201,14 @@ jobs:
           cp "$dmg_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.dmg"
           cp "$app_tar_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz"
           cp "$app_sig_file" "$output_dir/Channel_Nest_${app_version}_macos_${arch}.app.tar.gz.sig"
+
+      - name: Upload macOS package artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Channel_Nest_macos_${{ matrix.artifact_arch }}
+          path: release-macos/*
+          if-no-files-found: error
 
       - name: Upload macOS artifacts to OSS
         if: startsWith(github.ref, 'refs/tags/')
@@ -357,6 +364,14 @@ jobs:
             Get-ChildItem $bundleDir -File | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
+
+      - name: Upload Windows package artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Channel_Nest_windows_x64
+          path: release-windows/*
+          if-no-files-found: error
 
       - name: Upload Windows artifacts to OSS
         if: startsWith(github.ref, 'refs/tags/')

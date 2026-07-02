@@ -16,8 +16,7 @@
   background: rgba(4, 18, 21, 0.38);
 }
 
-.theme-light .activity-row,
-.theme-light .account-card {
+.theme-light .activity-row {
   background: rgba(239, 248, 249, 0.76);
 }
 

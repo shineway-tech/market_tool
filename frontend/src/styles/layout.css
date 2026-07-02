@@ -269,9 +269,7 @@ p {
 }
 
 .primary-btn::before,
-.ghost-btn::before,
-.icon-btn::before,
-.mini-login::before {
+.ghost-btn::before {
   content: "";
   position: absolute;
   inset: 1px;
@@ -308,9 +306,7 @@ p {
 }
 
 .primary-btn:active,
-.ghost-btn:active,
-.icon-btn:active,
-.mini-login:active {
+.ghost-btn:active {
   filter: brightness(0.94);
 }
 

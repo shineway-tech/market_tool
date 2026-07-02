@@ -7,12 +7,12 @@ use cdp::{
     browser_debug_port_closed,
     browser_page_url,
     browser_websocket_url,
-    create_browser_page,
     page_websocket_url,
     wait_for_page_websocket,
+    wait_for_target_page_websocket,
     DevtoolsClient,
 };
-use system_browser::{allocate_local_port, find_chromium_browser, find_existing_debug_port_for_profile};
+use system_browser::{allocate_local_port, find_chromium_browser};
 use std::{
     io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
@@ -340,7 +340,198 @@ pub(crate) fn managed_browser_fetch_kuaishou_home_info(
         .ok_or_else(|| "快手浏览器状态缺少账号资料".to_string())
 }
 
-pub(crate) fn managed_browser_fetch_kuaishou_home_info_from_profile(
+pub(crate) fn managed_browser_fetch_kuaishou_api(
+    session: &ManagedBrowserAuthSession,
+    api_url: &str,
+    body: Value,
+) -> Result<Value, String> {
+    let script = kuaishou_client_post_script(api_url, body)?;
+    let wrapped = managed_browser_eval_json(session, &script)?;
+    let status = first_i64(&wrapped, &["status"]).unwrap_or(0);
+    let ok = wrapped
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or(status >= 200 && status < 300);
+    let url = wrapped.get("url").and_then(Value::as_str).unwrap_or_default();
+    let source = wrapped.get("source").and_then(Value::as_str).unwrap_or_default();
+    let result_code = wrapped
+        .get("data")
+        .and_then(|data| first_i64(data, &["result", "code", "errCode", "errcode"]));
+    eprintln!(
+        "[managed-api:kuaishou] browser fetch source={source} status={status} result={:?} url={}",
+        result_code,
+        sanitize_sensitive_url_for_log(url)
+    );
+    if ok {
+        wrapped
+            .get("data")
+            .cloned()
+            .ok_or_else(|| "快手页面客户端请求缺少数据".to_string())
+    } else {
+        let message = wrapped
+            .get("error")
+            .and_then(Value::as_str)
+            .or_else(|| wrapped.get("message").and_then(Value::as_str))
+            .unwrap_or("快手页面客户端请求失败");
+        Err(message.to_string())
+    }
+}
+
+pub(crate) fn managed_browser_fetch_kuaishou_api_with_cookie_headless(
+    login_cookie: &str,
+    page_url: &str,
+    api_url: &str,
+    body: Value,
+) -> Result<Value, String> {
+    let platform = platforms::platform("kuaishou").ok_or_else(|| "当前平台暂不支持".to_string())?;
+    let browser_path = find_chromium_browser()
+        .ok_or_else(|| "未找到 Chrome、Edge 或 Chromium，无法使用浏览器模式同步快手数据。".to_string())?;
+    let user_data_dir = std::env::temp_dir().join(format!("market-tool-ks-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&user_data_dir).map_err(|error| format!("创建快手临时浏览器目录失败: {error}"))?;
+
+    let remote_debugging_port = allocate_local_port()?;
+    let mut command = Command::new(&browser_path);
+    command
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
+        .arg(format!("--remote-debugging-port={remote_debugging_port}"))
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-features=Translate")
+        .arg("--window-size=1280,900")
+        .arg("about:blank");
+    let child = command
+        .spawn()
+        .map_err(|error| format!("启动快手后台数据同步失败: {error}"))?;
+    let session = ManagedBrowserAuthSession {
+        session_id: format!("managed-api-kuaishou-cookie-{}", task_suffix(&Uuid::new_v4().to_string())),
+        profile_id: String::new(),
+        platform_id: platform.id.to_string(),
+        login_url: page_url.to_string(),
+        remote_debugging_port,
+        process_id: child.id(),
+    };
+
+    let result = (|| {
+        let websocket_url = wait_for_page_websocket(remote_debugging_port, "about:blank")?;
+        let mut client = DevtoolsClient::connect(&websocket_url)?;
+        client.call("Network.enable", serde_json::json!({}))?;
+        client.call("Page.enable", serde_json::json!({}))?;
+        let cookies = login_cookie_to_cdp_cookies(platform.id, login_cookie)?;
+        let (written, failed) = set_cdp_cookies(&mut client, &cookies);
+        eprintln!(
+            "[managed-api:kuaishou] temp cookie_write written={} failed={}",
+            written, failed
+        );
+        if !cookies.is_empty() && written == 0 {
+            return Err("快手登录 Cookie 写入后台浏览器失败".to_string());
+        }
+        client.call("Page.navigate", serde_json::json!({ "url": page_url }))?;
+        wait_for_target_page_websocket(remote_debugging_port, page_url)?;
+        std::thread::sleep(Duration::from_millis(1_500));
+        managed_browser_fetch_kuaishou_api(&session, api_url, body)
+    })();
+    close_managed_browser_auth_session(&session);
+    let _ = fs::remove_dir_all(&user_data_dir);
+    result
+}
+
+fn kuaishou_client_post_script(api_url: &str, body: Value) -> Result<String, String> {
+    let api_url = serde_json::to_string(api_url)
+        .map_err(|error| format!("快手接口地址序列化失败: {error}"))?;
+    let body = serde_json::to_string(&body)
+        .map_err(|error| format!("快手接口参数序列化失败: {error}"))?;
+    Ok(r#"
+        (async () => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          function getWebpackRequire() {
+            if (!window.webpackChunkks_fe_creator_platform) {
+              return null;
+            }
+            let req = null;
+            window.webpackChunkks_fe_creator_platform.push([[Date.now()], {}, function (r) { req = r; }]);
+            return req;
+          }
+          async function getKuaishouClient() {
+            for (let index = 0; index < 100; index += 1) {
+              const req = getWebpackRequire();
+              if (req) {
+                try {
+                  const module = req(37282);
+                  const client = module && (module.K || module.A || module.default);
+                  if (client && typeof client.post === 'function') {
+                    return { client, source: 'module:37282' };
+                  }
+                } catch (error) {
+                  // Module ids can change between builds; scan the loaded cache below.
+                }
+                const cache = req.c || {};
+                for (const key of Object.keys(cache)) {
+                  const exports = cache[key] && cache[key].exports;
+                  const client = exports && (exports.K || exports.A || exports.default);
+                  if (client && typeof client.post === 'function') {
+                    return { client, source: `cache:${key}` };
+                  }
+                }
+              }
+              await sleep(250);
+            }
+            return null;
+          }
+          try {
+            const api = __KUAISHOU_API_URL__;
+            let signedApi = api;
+            try {
+              const parsed = new URL(api, location.href);
+              if (parsed.origin === location.origin) {
+                signedApi = `${parsed.pathname}${parsed.search}`;
+              }
+            } catch (error) {
+              // Keep the original URL when URL parsing is unavailable or unexpected.
+            }
+            const payload = __KUAISHOU_API_BODY__;
+            const signedClient = await getKuaishouClient();
+            if (signedClient) {
+              const response = await signedClient.client.post(signedApi, payload, {
+                universalErrorHandler: false,
+                universalLoading: false
+              });
+              return {
+                ok: true,
+                status: response && response.status ? response.status : 200,
+                source: signedClient.source,
+                url: location.href,
+                data: response && Object.prototype.hasOwnProperty.call(response, 'data') ? response.data : response
+              };
+            }
+            const response = await fetch(api, {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/json;charset=utf-8'
+              },
+              body: JSON.stringify(payload)
+            });
+            const text = await response.text();
+            return {
+              ok: response.ok,
+              status: response.status,
+              source: 'fetch',
+              url: location.href,
+              data: JSON.parse(text)
+            };
+          } catch (error) {
+            return { ok: false, status: 0, url: location.href, error: String(error) };
+          }
+        })()
+    "#
+    .replace("__KUAISHOU_API_URL__", &api_url)
+    .replace("__KUAISHOU_API_BODY__", &body))
+}
+
+pub(crate) fn managed_browser_fetch_kuaishou_home_info_headless(
     app: &AppHandle,
     profile_id: &str,
 ) -> Result<(Value, Option<ManagedBrowserCookieSnapshot>), String> {
@@ -350,22 +541,6 @@ pub(crate) fn managed_browser_fetch_kuaishou_home_info_from_profile(
     let user_data_dir = managed_browser_auth_profile_dir(app, platform, profile_id)?;
     if !user_data_dir.exists() {
         return Err("快手浏览器登录目录不存在，请重新登录。".to_string());
-    }
-    if let Some(remote_debugging_port) = find_existing_debug_port_for_profile(&user_data_dir) {
-        let session = ManagedBrowserAuthSession {
-            session_id: format!("managed-sync-kuaishou-{}", task_suffix(profile_id)),
-            profile_id: profile_id.to_string(),
-            platform_id: platform.id.to_string(),
-            login_url: platform.creator_home_url.to_string(),
-            remote_debugging_port,
-            process_id: 0,
-        };
-        if page_websocket_url(remote_debugging_port, platform.creator_home_url).is_err() {
-            let _ = create_browser_page(remote_debugging_port, platform.creator_home_url);
-        }
-        let value = managed_browser_fetch_kuaishou_home_info(&session)?;
-        let snapshot = managed_browser_cookie_snapshot(&session).ok().flatten();
-        return Ok((value, snapshot));
     }
 
     let remote_debugging_port = allocate_local_port()?;
@@ -382,7 +557,7 @@ pub(crate) fn managed_browser_fetch_kuaishou_home_info_from_profile(
         .arg(platform.creator_home_url);
     let child = command
         .spawn()
-        .map_err(|error| format!("启动快手资料同步浏览器失败: {error}"))?;
+        .map_err(|error| format!("启动快手后台资料同步失败: {error}"))?;
     let session = ManagedBrowserAuthSession {
         session_id: format!("managed-sync-kuaishou-{}", task_suffix(profile_id)),
         profile_id: profile_id.to_string(),
@@ -393,13 +568,223 @@ pub(crate) fn managed_browser_fetch_kuaishou_home_info_from_profile(
     };
 
     let result = (|| {
-        wait_for_page_websocket(remote_debugging_port, platform.creator_home_url)?;
-        let value = managed_browser_fetch_kuaishou_home_info(&session)?;
+        wait_for_target_page_websocket(remote_debugging_port, platform.creator_home_url)?;
+        let value = managed_browser_fetch_kuaishou_home_info_with_retry(&session)?;
         let snapshot = managed_browser_cookie_snapshot(&session).ok().flatten();
         Ok((value, snapshot))
     })();
     close_managed_browser_auth_session(&session);
     result
+}
+
+#[allow(dead_code)]
+pub(crate) fn managed_browser_fetch_xhs_account_content_headless(login_cookie: &str) -> Result<Value, String> {
+    let script = xhs_creator_client_script("account", None)?;
+    managed_browser_fetch_xhs_json_headless(login_cookie, &script, "小红书账号数据")
+}
+
+#[allow(dead_code)]
+pub(crate) fn managed_browser_fetch_xhs_works_page_headless(
+    login_cookie: &str,
+    page_key: &str,
+) -> Result<Value, String> {
+    let script = xhs_creator_client_script("works", Some(page_key))?;
+    managed_browser_fetch_xhs_json_headless(login_cookie, &script, "小红书作品列表")
+}
+
+#[allow(dead_code)]
+fn managed_browser_fetch_xhs_json_headless(
+    login_cookie: &str,
+    script: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let platform = platforms::platform("xiaohongshu").ok_or_else(|| "当前平台暂不支持".to_string())?;
+    let browser_path = find_chromium_browser()
+        .ok_or_else(|| format!("未找到 Chrome、Edge 或 Chromium，无法同步{label}。"))?;
+    let user_data_dir = std::env::temp_dir().join(format!("market-tool-xhs-sync-{}", Uuid::new_v4()));
+    fs::create_dir_all(&user_data_dir).map_err(|error| format!("创建小红书临时浏览器目录失败: {error}"))?;
+    let remote_debugging_port = allocate_local_port()?;
+    let mut command = Command::new(&browser_path);
+    command
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
+        .arg(format!("--remote-debugging-port={remote_debugging_port}"))
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-features=Translate")
+        .arg("--window-size=1280,900")
+        .arg("about:blank");
+    let child = command
+        .spawn()
+        .map_err(|error| format!("启动小红书后台同步浏览器失败: {error}"))?;
+    let session = ManagedBrowserAuthSession {
+        session_id: format!("managed-sync-xhs-{}", task_suffix(&Uuid::new_v4().to_string())),
+        profile_id: String::new(),
+        platform_id: platform.id.to_string(),
+        login_url: platform.creator_home_url.to_string(),
+        remote_debugging_port,
+        process_id: child.id(),
+    };
+
+    let result = (|| {
+        let websocket_url = wait_for_page_websocket(remote_debugging_port, "about:blank")?;
+        let mut client = DevtoolsClient::connect(&websocket_url)?;
+        client.call("Network.enable", serde_json::json!({}))?;
+        client.call("Page.enable", serde_json::json!({}))?;
+        let cookies = login_cookie_to_cdp_cookies(platform.id, login_cookie)?;
+        let (written, failed) = set_cdp_cookies(&mut client, &cookies);
+        eprintln!(
+            "[managed-auth:xiaohongshu] cookie_write written={} failed={}",
+            written,
+            failed
+        );
+        if !cookies.is_empty() && written == 0 {
+            return Err("小红书登录 Cookie 写入后台浏览器失败".to_string());
+        }
+        client.call("Page.navigate", serde_json::json!({ "url": platform.creator_home_url }))?;
+        wait_for_target_page_websocket(remote_debugging_port, platform.creator_home_url)?;
+        std::thread::sleep(Duration::from_millis(1_500));
+        let value = managed_browser_eval_json(&session, script)?;
+        let ok = value
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| value.get("error").is_none());
+        let source = value.get("source").and_then(Value::as_str).unwrap_or_default();
+        let url = value.get("href").and_then(Value::as_str).unwrap_or_default();
+        eprintln!(
+            "[managed-auth:xiaohongshu] browser fetch label={label} source={source} ok={ok} url={}",
+            sanitize_sensitive_url_for_log(url)
+        );
+        if !ok {
+            let message = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("小红书页面客户端请求失败");
+            return Err(message.to_string());
+        }
+        Ok(value)
+    })();
+    close_managed_browser_auth_session(&session);
+    let _ = fs::remove_dir_all(&user_data_dir);
+    result
+}
+
+#[allow(dead_code)]
+fn xhs_creator_client_script(kind: &str, page_key: Option<&str>) -> Result<String, String> {
+    let kind_json = serde_json::to_string(kind).map_err(|error| format!("小红书请求类型序列化失败: {error}"))?;
+    let page_key_json =
+        serde_json::to_string(&page_key.unwrap_or("")).map_err(|error| format!("小红书页码序列化失败: {error}"))?;
+    Ok(r#"
+        (async () => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const kind = __KIND__;
+          const pageKey = __PAGE_KEY__;
+
+          function getWebpackRequire() {
+            if (!window.webpackChunkugc) {
+              return null;
+            }
+            let req = null;
+            window.webpackChunkugc.push([[Date.now()], {}, function (r) { req = r; }]);
+            return req;
+          }
+
+          async function getClient() {
+            for (let index = 0; index < 100; index += 1) {
+              const req = getWebpackRequire();
+              if (req) {
+                try {
+                  const module = req(11237);
+                  if (module && module.LV && typeof module.LV.get === "function") {
+                    return { req, client: module, source: "module:11237" };
+                  }
+                } catch (error) {
+                  // Module ids are build-specific; scan the loaded cache below.
+                }
+                const cache = req.c || {};
+                for (const key of Object.keys(cache)) {
+                  const exports = cache[key] && cache[key].exports;
+                  if (exports && exports.LV && typeof exports.LV.get === "function") {
+                    return { req, client: exports, source: `cache:${key}` };
+                  }
+                }
+              }
+              await sleep(250);
+            }
+            return null;
+          }
+
+          function errorText(error) {
+            if (!error) return "unknown";
+            if (typeof error === "string") return error;
+            const response = error.response || {};
+            const data = response.data || error.data || {};
+            return data.msg || data.message || error.message || String(error);
+          }
+
+          async function getByKey(client, key, params) {
+            if (params) {
+              return await client.LV.get(key, { params });
+            }
+            return await client.LV.get(key);
+          }
+
+          try {
+            for (let index = 0; index < 120; index += 1) {
+              if (document.readyState === "complete" || document.readyState === "interactive") {
+                break;
+              }
+              await sleep(250);
+            }
+            const resolved = await getClient();
+            if (!resolved) {
+              return { ok: false, href: location.href, error: "小红书页面请求客户端未加载完成" };
+            }
+            const client = resolved.client;
+            if (kind === "works") {
+              const params = { tab: 0 };
+              if (pageKey) {
+                params.page = pageKey;
+              }
+              const postedNotes = await getByKey(client, "USER_POSTED_NOTES", params);
+              return {
+                ok: true,
+                source: resolved.source,
+                href: location.href,
+                postedNotes
+              };
+            }
+            const personalInfo = await getByKey(client, "PERSONAL_INFO");
+            const accountBase = await getByKey(client, "QUERY_ACCOUNT_DATA");
+            const postedNotes = await getByKey(client, "USER_POSTED_NOTES", { tab: 0 });
+            const latestNote = await getByKey(client, "LATEST_NOTE");
+            const noteId = latestNote && latestNote.noteInfo && latestNote.noteInfo.id;
+            const noteDetail = noteId
+              ? await getByKey(client, "NOTE_STATICS_OVERVIEW", { note_id: noteId })
+              : null;
+            return {
+              ok: true,
+              source: resolved.source,
+              href: location.href,
+              personalInfo,
+              accountBase,
+              postedNotes,
+              latestNote,
+              noteDetail
+            };
+          } catch (error) {
+            return {
+              ok: false,
+              source: "page-client",
+              href: location.href,
+              error: errorText(error)
+            };
+          }
+        })()
+    "#
+    .replace("__KIND__", &kind_json)
+    .replace("__PAGE_KEY__", &page_key_json))
 }
 
 fn managed_browser_eval_json(session: &ManagedBrowserAuthSession, expression: &str) -> Result<Value, String> {
@@ -421,6 +806,32 @@ fn managed_browser_eval_json(session: &ManagedBrowserAuthSession, expression: &s
         .and_then(|value| value.get("value"))
         .cloned()
         .ok_or_else(|| "浏览器脚本没有返回结果".to_string())
+}
+
+pub(crate) fn managed_browser_fetch_kuaishou_home_info_with_retry(
+    session: &ManagedBrowserAuthSession,
+) -> Result<Value, String> {
+    let mut last_error = String::new();
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(1_200));
+        }
+        match managed_browser_fetch_kuaishou_home_info(session) {
+            Ok(value) => return Ok(value),
+            Err(error) if browser_page_eval_retryable(&error) => {
+                last_error = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
+}
+
+fn browser_page_eval_retryable(error: &str) -> bool {
+    error.contains("Execution context was destroyed")
+        || error.contains("Cannot find context with specified id")
+        || error.contains("Inspected target navigated or closed")
+        || error.contains("浏览器脚本没有返回结果")
 }
 
 fn sanitize_sensitive_url_for_log(raw: &str) -> String {

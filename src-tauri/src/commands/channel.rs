@@ -57,6 +57,24 @@ pub(crate) async fn refresh_channel_account(
 }
 
 #[tauri::command]
+pub(crate) async fn sync_channel_account_content(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    request: ChannelAccountContentRequest,
+) -> Result<ChannelAccountContent, String> {
+    services::channel_service::sync_channel_account_content(app, state, request).await
+}
+
+#[tauri::command]
+pub(crate) async fn load_channel_account_works_page(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    request: ChannelWorksPageRequest,
+) -> Result<ChannelWorksPage, String> {
+    services::channel_service::load_channel_account_works_page(app, state, request).await
+}
+
+#[tauri::command]
 pub(crate) async fn mark_channel_account_unavailable(
     app: AppHandle,
     state: State<'_, RuntimeState>,

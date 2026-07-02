@@ -13,51 +13,6 @@ pub(super) fn find_chromium_browser() -> Option<PathBuf> {
         .find(|path| path.exists() && is_executable_file(path))
 }
 
-pub(super) fn find_existing_debug_port_for_profile(user_data_dir: &Path) -> Option<u16> {
-    let profile = user_data_dir.to_string_lossy();
-    process_command_lines()
-        .into_iter()
-        .find(|line| line.contains(&format!("--user-data-dir={profile}")) || line.contains(profile.as_ref()))
-        .and_then(|line| remote_debugging_port_from_command_line(&line))
-}
-
-fn remote_debugging_port_from_command_line(line: &str) -> Option<u16> {
-    let marker = "--remote-debugging-port=";
-    let start = line.find(marker)? + marker.len();
-    let value = line[start..]
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_matches('"')
-        .trim_matches('\'');
-    value.parse().ok()
-}
-
-#[cfg(target_os = "windows")]
-fn process_command_lines() -> Vec<String> {
-    let script = r#"
-      Get-CimInstance Win32_Process |
-        Where-Object { $_.CommandLine -match '--user-data-dir=' -and $_.CommandLine -match '--remote-debugging-port=' } |
-        ForEach-Object { $_.CommandLine }
-    "#;
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).lines().map(ToString::to_string).collect())
-        .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn process_command_lines() -> Vec<String> {
-    Command::new("ps")
-        .args(["ax", "-o", "command="])
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).lines().map(ToString::to_string).collect())
-        .unwrap_or_default()
-}
-
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }

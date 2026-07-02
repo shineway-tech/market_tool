@@ -1,34 +1,27 @@
 import type { ChannelAccount, PlatformInfo, StartLoginResponse } from "../domain/types";
 import type { CopyText } from "../i18n/copy";
-import { formatDate, formatFollowers, statusLabel } from "../utils/format";
+import { statusLabel } from "../utils/format";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 import { isQrAuth } from "../domain/auth-task";
 import { icon } from "./icons";
 import { platformLogo } from "./platform-logo";
 
-export interface PlatformItemState {
+export interface PlatformTreeItemState {
   platform: PlatformInfo;
-  text: CopyText;
   count: number;
   active: boolean;
-  countLabel: string;
+  expanded: boolean;
+  canToggle: boolean;
+  accountsHtml: string;
 }
 
-export interface AccountItemState {
+export interface AccountNavItemState {
   account: ChannelAccount;
   text: CopyText;
   platform?: PlatformInfo;
-  isRefreshing: boolean;
-  isOpeningHomepage: boolean;
+  active: boolean;
   isUnavailable: boolean;
-  followersText: string;
-  syncText: string;
   fallbackAvatar: string;
-}
-
-export interface EmptyAccountsState {
-  platform: PlatformInfo;
-  text: CopyText;
 }
 
 export interface AuthDialogState {
@@ -38,78 +31,74 @@ export interface AuthDialogState {
   description: string;
 }
 
-export function renderPlatformItem({
+export function renderPlatformTreeItem({
   platform,
-  text,
   count,
   active,
-  countLabel,
-}: PlatformItemState) {
+  expanded,
+  canToggle,
+  accountsHtml,
+}: PlatformTreeItemState) {
   return `
-    <button class="platform-item ${active ? "active" : ""}" type="button" data-platform="${platform.id}">
-      ${platformLogo(platform)}
-      <span class="platform-copy">
-        <strong>${platform.name}</strong>
-        <em>${countLabel}</em>
+    <div class="platform-tree-group ${active ? "active" : ""} ${expanded ? "expanded" : ""} ${count === 0 || !canToggle ? "is-empty" : ""}">
+      <div class="platform-tree-head" data-platform="${escapeAttribute(platform.id)}">
+        <button class="platform-select" type="button">
+          <span class="platform-logo-wrap">
+            ${platformLogo(platform)}
+          </span>
+          <span class="platform-copy">
+            <strong>${escapeHtml(platform.name)}</strong>
+          </span>
+        </button>
+        <span class="platform-count-text">${count}</span>
+        ${
+          count > 0 && canToggle
+            ? `<button class="platform-toggle ${expanded ? "expanded" : ""}" type="button" data-toggle-platform="${escapeAttribute(platform.id)}" title="${escapeAttribute(platform.name)}">${icon("chevron")}</button>`
+            : ""
+        }
+      </div>
+      ${
+        expanded && accountsHtml
+          ? `<div class="platform-account-list">${accountsHtml}</div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+export function renderAccountNavItem({
+  account,
+  text,
+  platform,
+  active,
+  isUnavailable,
+  fallbackAvatar,
+}: AccountNavItemState) {
+  return `
+    <button class="account-nav-item ${active ? "active" : ""} ${isUnavailable ? "is-unavailable" : ""}" type="button" data-account="${escapeAttribute(account.id)}" title="${escapeAttribute(`${account.nickname} · ${statusLabel(account.status, text)}`)}">
+      ${renderAccountAvatar(account, platform, fallbackAvatar, `account-nav-avatar status-${account.status}`)}
+      <span class="account-nav-copy">
+        <strong>${escapeHtml(account.nickname)}</strong>
       </span>
-      <span class="count">${count}</span>
-      <span class="mini-login" data-login="${platform.id}"${platform.id === "xiaohongshu" ? ' data-login-target="creator"' : ""} title="${text.loginAccount} ${platform.name}">${icon("plus")}</span>
     </button>
   `;
 }
 
-export function renderAccountItem({
-  account,
-  text,
-  platform,
-  isRefreshing,
-  isOpeningHomepage,
-  isUnavailable,
-  followersText,
-  syncText,
-  fallbackAvatar,
-}: AccountItemState) {
-  const platformId = platform?.id || account.platformId;
+export function renderAccountAvatar(
+  account: ChannelAccount,
+  platform: PlatformInfo | undefined,
+  fallbackAvatar: string,
+  className: string,
+) {
   return `
-    <article class="account-card ${isUnavailable ? "is-unavailable" : ""}">
-      <div class="account-avatar">
-        ${
-          account.avatar
-            ? `<img src="${escapeAttribute(account.avatar)}" alt="">`
-            : platform
-              ? platformLogo(platform, "avatar")
-              : fallbackAvatar
-        }
-      </div>
-      <div class="account-main">
-        <div class="account-line">
-          <h3>${escapeHtml(account.nickname)}</h3>
-          <span class="status ${account.status}">${statusLabel(account.status, text)}</span>
-        </div>
-        <div class="account-meta">
-          <span>${platform?.name || account.platformId}</span>
-          <span>${followersText}</span>
-          <span>${syncText}</span>
-        </div>
-      </div>
-      <div class="account-card-actions">
-        ${
-          isUnavailable
-            ? `<button class="ghost-btn relogin-btn" type="button" data-login="${escapeAttribute(platformId)}"${platformId === "xiaohongshu" ? ' data-login-target="creator"' : ""} title="${text.reloginAccount}" ${isRefreshing ? "disabled" : ""}>${icon("refresh")}${text.reloginAccount}</button>`
-            : `<button class="icon-btn" type="button" data-open-homepage="${escapeAttribute(account.id)}" title="${text.homepage}" ${isOpeningHomepage || isRefreshing ? "disabled" : ""}>${icon("home")}</button>`
-        }
-        <button class="icon-btn ${isRefreshing ? "is-loading" : ""}" type="button" data-refresh-account="${escapeAttribute(account.id)}" title="${text.refresh}" ${isRefreshing ? "disabled" : ""}>${icon("refresh")}</button>
-        <button class="icon-btn danger" type="button" data-delete-account="${escapeAttribute(account.id)}" title="删除账号" ${isRefreshing || isOpeningHomepage ? "disabled" : ""}>${icon("trash")}</button>
-      </div>
-    </article>
-  `;
-}
-
-export function renderEmptyAccounts({ platform, text }: EmptyAccountsState) {
-  return `
-    <div class="empty-state">
-      <div class="empty-logo">${platformLogo(platform, "large")}</div>
-      <h3>${text.noAccountPrefix} ${platform.name} ${text.noAccountSuffix}</h3>
+    <div class="${className}">
+      ${
+        account.avatar
+          ? `<img src="${escapeAttribute(account.avatar)}" alt="">`
+          : platform
+            ? platformLogo(platform, "avatar")
+            : fallbackAvatar
+      }
     </div>
   `;
 }
@@ -137,12 +126,4 @@ export function renderAuthDialog({ task, text, platform, description }: AuthDial
       </section>
     </div>
   `;
-}
-
-export function accountSyncText(account: ChannelAccount, text: CopyText, language: "zh" | "en") {
-  return account.lastSyncAt ? `${text.syncedAt} ${formatDate(account.lastSyncAt, language)}` : text.notSynced;
-}
-
-export function accountFollowersText(account: ChannelAccount, text: CopyText, language: "zh" | "en") {
-  return formatFollowers(account.followers, language, text);
 }

@@ -59,13 +59,11 @@ button {
   background: transparent;
 }
 
-button,
-.mini-login {
+button {
   -webkit-tap-highlight-color: transparent;
 }
 
 button:focus-visible,
-.mini-login:focus-visible,
 select:focus-visible,
 input:focus-visible {
   outline: 2px solid rgba(22, 230, 138, 0.45);

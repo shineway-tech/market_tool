@@ -6,7 +6,86 @@
 
 @media (max-width: 1120px) {
   .channel-layout {
-    grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .workspace-head {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .workspace-actions {
+    justify-content: flex-start;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .xhs-metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .adaptive-metric-grid[class*="metric-cols-"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .xhs-metric-card:nth-child(6n) {
+    border-right: 1px dashed rgba(138, 177, 187, 0.2);
+  }
+
+  .xhs-metric-card:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .xhs-metric-card:nth-last-child(-n + 6) {
+    border-bottom: 1px dashed rgba(138, 177, 187, 0.2);
+  }
+
+  .xhs-metric-card:nth-last-child(-n + 3) {
+    border-bottom: 0;
+  }
+
+  .adaptive-metric-grid[class*="metric-cols-"] .xhs-metric-card:nth-child(n) {
+    border-right: 1px dashed rgba(138, 177, 187, 0.2);
+    border-bottom: 1px dashed rgba(138, 177, 187, 0.2);
+  }
+
+  .adaptive-metric-grid[class*="metric-cols-"] .xhs-metric-card:nth-child(3n) {
+    border-right: 0;
+  }
+
+  .adaptive-metric-grid[class*="metric-cols-"] .xhs-metric-card:nth-last-child(-n + 3) {
+    border-bottom: 0;
+  }
+
+  .adaptive-metric-grid.metric-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adaptive-metric-grid.metric-cols-4 .xhs-metric-card:nth-child(n) {
+    border-right: 1px dashed rgba(138, 177, 187, 0.2);
+    border-bottom: 1px dashed rgba(138, 177, 187, 0.2);
+  }
+
+  .adaptive-metric-grid.metric-cols-4 .xhs-metric-card:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .adaptive-metric-grid.metric-cols-4 .xhs-metric-card:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .douyin-latest-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .workspace-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .account-data-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .release-control-bar {
