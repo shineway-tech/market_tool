@@ -41,7 +41,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "Channel Nest $GITHUB_REF_NAME" \
-            --notes "First desktop release for Channel Nest. Installers and updater packages are uploaded to OSS; GitHub only exposes the source code archives."
+            --notes "本次更新接入小红书、视频号、抖音、B 站、快手创作者中心数据，支持账号总览、作品列表、最新作品数据与本地缓存；同时优化平台账号布局、加载状态、刷新体验和手动打包产物上传。"
 
   build-macos:
     name: Build ${{ matrix.name }}
@@ -429,7 +429,7 @@ jobs:
         env:
           DESKTOP_UPDATE_RELEASE_TOKEN: ${{ secrets.DESKTOP_UPDATE_RELEASE_TOKEN }}
           DESKTOP_UPDATE_API_URL: ${{ secrets.DESKTOP_UPDATE_API_URL }}
-          DESKTOP_UPDATE_NOTES: Desktop release for Channel Nest.
+          DESKTOP_UPDATE_NOTES: 本次更新接入小红书、视频号、抖音、B 站、快手创作者中心数据，支持账号总览、作品列表、最新作品数据与本地缓存；同时优化平台账号布局、加载状态、刷新体验和手动打包产物上传。
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
