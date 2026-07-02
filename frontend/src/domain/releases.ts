@@ -5,6 +5,40 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
   if (language === "en") {
     return [
       {
+        version: "1.0.1",
+        date: "2026.07.02",
+        icon: "spark",
+        sections: [
+          {
+            icon: "activity",
+            title: "Creator Center Analytics",
+            items: [
+              "Connected overview metrics for Xiaohongshu, WeChat Channels, Douyin, Bilibili, and Kuaishou",
+              "Added platform-specific periods such as yesterday, recent 7 days, recent 30 days, recent 90 days, and cumulative totals",
+              "Cached synced account data locally for faster switching and refreshes",
+            ],
+          },
+          {
+            icon: "layers",
+            title: "Works Data",
+            items: [
+              "Added paged works lists, latest work cards, covers, status badges, pinned labels, and content-type labels",
+              "Supported separate video and article/image views where the platform creator center exposes them",
+              "Improved metric mapping for latest works and detail pages across connected platforms",
+            ],
+          },
+          {
+            icon: "settings",
+            title: "Experience Improvements",
+            items: [
+              "Refined the platform account sidebar, search, selected states, loading states, and light theme colors",
+              "Reduced refresh flicker and layout jumps while syncing account and works data",
+              "Added manual package artifacts for branch-triggered desktop packaging",
+            ],
+          },
+        ],
+      },
+      {
         version: "1.0.0",
         date: "2026.06.23",
         icon: "spark",
@@ -40,6 +74,40 @@ export function releaseHistoryForLanguage(language: LanguageMode): ReleaseHistor
   }
 
   return [
+    {
+      version: "1.0.1",
+      date: "2026.07.02",
+      icon: "spark",
+      sections: [
+        {
+          icon: "activity",
+          title: "创作中心数据",
+          items: [
+            "接入小红书、视频号、抖音、B 站、快手的账号总览数据",
+            "支持昨日、近 7 日、近 30 日、近 90 日、历史累计等平台对应周期",
+            "同步后的账号数据会分平台缓存在本地，切换账号和刷新更顺手",
+          ],
+        },
+        {
+          icon: "layers",
+          title: "作品数据",
+          items: [
+            "新增分页作品列表、最新作品、封面、状态标签、置顶标签和作品类型标签",
+            "按平台能力区分视频、图文等作品类型，展示对应创作中心字段",
+            "优化各平台最新作品详情数据映射，补齐播放、点赞、评论、收藏、分享等指标",
+          ],
+        },
+        {
+          icon: "settings",
+          title: "体验优化",
+          items: [
+            "优化平台账号侧边栏、搜索、选中态、加载态和浅色模式配色",
+            "减少刷新和切换作品列表时的抖动，数据同步过程更稳定",
+            "完善手动触发桌面端打包时的安装包产物上传",
+          ],
+        },
+      ],
+    },
     {
       version: "1.0.0",
       date: "2026.06.23",
